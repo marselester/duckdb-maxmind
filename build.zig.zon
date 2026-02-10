@@ -1,0 +1,16 @@
+.{
+    .name = .duckdb_maxmind,
+    .version = "0.0.0",
+    .fingerprint = 0x3637936961daa956,
+    .dependencies = .{
+        .maxminddb = .{
+            .url = "git+https://github.com/marselester/maxminddb.zig?ref=master#5a7a390c4aa0b07d77abcefefaba60dc90eb75ec",
+            .hash = "maxminddb-0.0.0-HBInukIPAQDRS9b1HmtPEyWZ1Sluv9DB9LmXOZX9fwTs",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
