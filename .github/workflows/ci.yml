@@ -1,0 +1,32 @@
+name: CI
+
+on: [push]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-linux
+            artifact: maxmind-linux_arm64
+          - target: x86_64-linux
+            artifact: maxmind-linux_amd64
+          - target: aarch64-macos
+            artifact: maxmind-osx_arm64
+          - target: x86_64-macos
+            artifact: maxmind-osx_amd64
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install dependencies
+        run: |
+          sudo snap install zig --classic --beta
+          zig version
+      - name: Fetch submodules
+        run: git submodule update --init --recursive
+      - name: Build
+        run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.target }}
+      - uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.artifact }}
+          path: zig-out/lib/maxmind.duckdb_extension
