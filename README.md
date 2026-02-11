@@ -21,8 +21,23 @@ Make sure the extension works by running DuckDB interactive session.
 ```sh
 $ brew install duckdb
 $ zig build duckdb
+```
 
-select row.name from read_mmdb('./GeoLite2-City.mmdb') limit 10;
+Try `.mode line` if `.mode box` truncates the output.
+
+```sql
+.mode box
+
+select network, r.city.names.en
+from read_mmdb('./GeoLite2-City.mmdb')
+where r.city.names.en != ''
+limit 1;
+
+┌─────────────┬───────────┐
+│   network   │    en     │
+├─────────────┼───────────┤
+│ 1.0.64.0/20 │ Hiroshima │
+└─────────────┴───────────┘
 ```
 
 You might need to update [duckdb.zig](./src/duckdb.zig)
