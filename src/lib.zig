@@ -264,3 +264,33 @@ fn formatNetwork(net: maxminddb.Network, buf: []u8) []const u8 {
         else => "",
     };
 }
+
+pub export fn register_scalar_function(conn: c.duckdb_connection) callconv(.c) c.duckdb_state {
+    const f = api.duckdb_create_scalar_function.?();
+    defer api.duckdb_destroy_scalar_function.?(@constCast(&f));
+
+    // Users will call the function SELECT * FROM lookup_mmdb('/path/to/my.mmdb', '89.160.20.128').
+    api.duckdb_scalar_function_set_name.?(f, "lookup_mmdb");
+
+    // Declare one VARCHAR parameter for the file path and IP arguments.
+    const varchar_type = api.duckdb_create_logical_type.?(c.DUCKDB_TYPE_VARCHAR);
+    defer api.duckdb_destroy_logical_type.?(@constCast(&varchar_type));
+
+    api.duckdb_scalar_function_add_parameter.?(f, varchar_type); // path
+    api.duckdb_scalar_function_add_parameter.?(f, varchar_type); // ip
+    api.duckdb_scalar_function_set_return_type.?(f, varchar_type); // result
+
+    api.duckdb_scalar_function_set_function.?(f, lookupCallback);
+
+    // Register the lookup_mmdb() scalar function with the DuckDB connection.
+    return api.duckdb_register_scalar_function.?(conn, f);
+}
+
+fn lookupCallback(
+    _: c.duckdb_function_info, // info
+    _: c.duckdb_data_chunk, // input
+    output: c.duckdb_vector,
+) callconv(.c) void {
+    const s = "test";
+    api.duckdb_vector_assign_string_element_len.?(output, 0, s, s.len);
+}

@@ -8,6 +8,8 @@ DUCKDB_EXTENSION_EXTERN
 // and C calling convention, so the C linker can resolve it at link time.
 extern duckdb_state register_table_function(duckdb_connection conn);
 
+extern duckdb_state register_scalar_function(duckdb_connection conn);
+
 // Define the extension version as a macro, which is set by the zig build.
 const char *version = EXTENSION_VERSION;
 
@@ -43,6 +45,12 @@ DUCKDB_EXTENSION_ENTRYPOINT(
     // Register the read_mmdb() table function with DuckDB.
     if (register_table_function(conn) == DuckDBError) {
         access->set_error(info, "Failed to register read_mmdb function");
+        return false;
+    }
+
+    // Register the lookup_mmdb() scalar function with DuckDB.
+    if (register_scalar_function(conn) == DuckDBError) {
+        access->set_error(info, "Failed to register lookup_mmdb function");
         return false;
     }
 
