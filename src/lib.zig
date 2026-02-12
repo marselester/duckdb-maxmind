@@ -13,7 +13,7 @@ const allocator = std.heap.c_allocator;
 // Creates, configures, and registers the read_mmdb() table function with DuckDB.
 // This function is exported with C calling convention so it can be called from
 // the C entrypoint in extension.c.
-pub export fn register_table_function(conn: c.duckdb_connection) callconv(.c) c.duckdb_state {
+pub export fn register_read_function(conn: c.duckdb_connection) callconv(.c) c.duckdb_state {
     // Create an empty table function handle.
     const tf = api.duckdb_create_table_function.?();
     defer api.duckdb_destroy_table_function.?(@constCast(&tf));
@@ -265,32 +265,97 @@ fn formatNetwork(net: maxminddb.Network, buf: []u8) []const u8 {
     };
 }
 
-pub export fn register_scalar_function(conn: c.duckdb_connection) callconv(.c) c.duckdb_state {
-    const f = api.duckdb_create_scalar_function.?();
-    defer api.duckdb_destroy_scalar_function.?(@constCast(&f));
-
-    // Users will call the function SELECT * FROM lookup_mmdb('/path/to/my.mmdb', '89.160.20.128').
-    api.duckdb_scalar_function_set_name.?(f, "lookup_mmdb");
-
-    // Declare one VARCHAR parameter for the file path and IP arguments.
+pub export fn register_lookup_functions(conn: c.duckdb_connection) callconv(.c) c.duckdb_state {
     const varchar_type = api.duckdb_create_logical_type.?(c.DUCKDB_TYPE_VARCHAR);
     defer api.duckdb_destroy_logical_type.?(@constCast(&varchar_type));
 
-    api.duckdb_scalar_function_add_parameter.?(f, varchar_type); // path
-    api.duckdb_scalar_function_add_parameter.?(f, varchar_type); // ip
-    api.duckdb_scalar_function_set_return_type.?(f, varchar_type); // result
+    // Register one function per database type, e.g., users can call SELECT geolite2_city(path, ip).
+    //
+    // Once duckdb_scalar_function_set_bind() is available in C extensions API,
+    // we should be able to consolidate them into a single function lookup_mmdb().
+    inline for (std.meta.fields(maxminddb.DatabaseType)) |field| {
+        const dt: maxminddb.DatabaseType = @enumFromInt(field.value);
+        const T = dt.recordType();
 
-    api.duckdb_scalar_function_set_function.?(f, lookupCallback);
+        const f = api.duckdb_create_scalar_function.?();
+        defer api.duckdb_destroy_scalar_function.?(@constCast(&f));
 
-    // Register the lookup_mmdb() scalar function with the DuckDB connection.
-    return api.duckdb_register_scalar_function.?(conn, f);
+        api.duckdb_scalar_function_set_name.?(f, field.name);
+        api.duckdb_scalar_function_add_parameter.?(f, varchar_type); // path
+        api.duckdb_scalar_function_add_parameter.?(f, varchar_type); // ip
+
+        const return_type = duckifier.createDuckDBType(T);
+        defer api.duckdb_destroy_logical_type.?(@constCast(&return_type));
+        api.duckdb_scalar_function_set_return_type.?(f, return_type);
+
+        api.duckdb_scalar_function_set_function.?(f, lookupCallback(T));
+
+        if (api.duckdb_register_scalar_function.?(conn, f) == c.DuckDBError) {
+            return c.DuckDBError;
+        }
+    }
+
+    return c.DuckDBSuccess;
 }
 
-fn lookupCallback(
-    _: c.duckdb_function_info, // info
-    _: c.duckdb_data_chunk, // input
-    output: c.duckdb_vector,
-) callconv(.c) void {
-    const s = "test";
-    api.duckdb_vector_assign_string_element_len.?(output, 0, s, s.len);
+/// Returns a scalar function callback for a specific record type.
+fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
+    return struct {
+        fn callback(
+            info: c.duckdb_function_info,
+            input: c.duckdb_data_chunk,
+            output: c.duckdb_vector,
+        ) callconv(.c) void {
+            const input_size = api.duckdb_data_chunk_get_size.?(input);
+            if (input_size == 0) {
+                return;
+            }
+
+            const path_vec = api.duckdb_data_chunk_get_vector.?(input, 0);
+            const ip_vec = api.duckdb_data_chunk_get_vector.?(input, 1);
+
+            const path_data: [*]c.duckdb_string_t = @ptrCast(@alignCast(
+                api.duckdb_vector_get_data.?(path_vec),
+            ));
+            const ip_data: [*]c.duckdb_string_t = @ptrCast(@alignCast(
+                api.duckdb_vector_get_data.?(ip_vec),
+            ));
+
+            // Read path from row 0 (constant across the batch).
+            const path_len = api.duckdb_string_t_length.?(path_data[0]);
+            const path_ptr = api.duckdb_string_t_data.?(&path_data[0]);
+            const path = path_ptr[0..path_len];
+
+            var db = maxminddb.Reader.mmap(allocator, path) catch {
+                api.duckdb_function_set_error.?(info, "open mmdb");
+                return;
+            };
+            defer db.unmap();
+
+            var arena = std.heap.ArenaAllocator.init(allocator);
+            defer arena.deinit();
+            const arena_allocator = arena.allocator();
+
+            var i: u64 = 0;
+            while (i < input_size) : (i += 1) {
+                const ip_len = api.duckdb_string_t_length.?(ip_data[i]);
+                const ip_ptr = api.duckdb_string_t_data.?(&ip_data[i]);
+                const ip_str = ip_ptr[0..ip_len];
+
+                const ip = std.net.Address.parseIp(ip_str, 0) catch {
+                    duckifier.setNull(output, i);
+                    continue;
+                };
+
+                const record = db.lookup(arena_allocator, T, &ip) catch {
+                    duckifier.setNull(output, i);
+                    continue;
+                };
+
+                duckifier.writeValue(T, record, output, i);
+
+                _ = arena.reset(std.heap.ArenaAllocator.ResetMode.retain_capacity);
+            }
+        }
+    }.callback;
 }

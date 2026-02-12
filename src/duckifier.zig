@@ -152,7 +152,7 @@ pub fn writeValue(comptime T: type, value: T, vector: c.duckdb_vector, row: u64)
     }
 }
 
-fn setNull(vector: c.duckdb_vector, row: u64) void {
+pub fn setNull(vector: c.duckdb_vector, row: u64) void {
     api.duckdb_vector_ensure_validity_writable.?(vector);
 
     const validity = api.duckdb_vector_get_validity.?(vector);
