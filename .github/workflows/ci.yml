@@ -3,19 +3,54 @@ name: CI
 on: [push]
 
 jobs:
+  test:
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-linux-gnu
+            os: ubuntu-24.04-arm
+          - target: x86_64-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-macos
+            os: macos-latest
+          - target: x86_64-macos
+            os: macos-15-intel
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Zig (Linux)
+        if: runner.os == 'Linux'
+        run: sudo snap install zig --classic --beta
+      - name: Install Zig (MacOS)
+        if: runner.os == 'macOS'
+        run: brew install zig
+      - name: Install DuckDB
+        run: curl https://install.duckdb.org | sh
+      - name: Fetch submodules
+        run: git submodule update --init --recursive
+      - name: Build
+        run: zig build -Dtarget=${{ matrix.target }}
+      - name: Test geolite_city
+        run: ~/.duckdb/cli/latest/duckdb -unsigned -c "LOAD 'zig-out/lib/maxmind.duckdb_extension'; SELECT geolite_city('./test-data/test-data/GeoIP2-City-Test.mmdb', '89.160.20.128');" | grep -q "Linköping"
+      - name: Test read_mmdb
+        run: ~/.duckdb/cli/latest/duckdb -unsigned -c "LOAD 'zig-out/lib/maxmind.duckdb_extension'; SELECT * FROM read_mmdb('./test-data/test-data/GeoIP2-City-Test.mmdb') LIMIT 1;" | grep -q "Boxford"
+
   build:
+    needs: test
     runs-on: ubuntu-latest
     strategy:
       matrix:
         include:
-          - target: aarch64-linux
-            artifact: maxmind-linux_arm64
-          - target: x86_64-linux
-            artifact: maxmind-linux_amd64
+          - target: aarch64-linux-gnu
+            artifact: duckdb_maxmind_linux_arm64
+          - target: x86_64-linux-gnu
+            artifact: duckdb_maxmind_linux_amd64
           - target: aarch64-macos
-            artifact: maxmind-osx_arm64
+            artifact: duckdb_maxmind_osx_arm64
           - target: x86_64-macos
-            artifact: maxmind-osx_amd64
+            artifact: duckdb_maxmind_osx_amd64
     steps:
       - uses: actions/checkout@v6
       - name: Install dependencies
