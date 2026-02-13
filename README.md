@@ -7,7 +7,7 @@ This unofficial extension allows DuckDB to read MaxMind databases (so far only G
 ## Quick start
 
 Clone [duckdb-maxmind](https://github.com/marselester/duckdb-maxmind.git) repository
-and update [extension-template-c](./extension-template-c) submodule
+and update [extension-template-c](https://github.com/duckdb/extension-template-c) submodule
 that provides DuckDB C Extension API.
 
 ```sh
@@ -29,10 +29,10 @@ Try `.mode line` if `.mode box` truncates the output.
 .mode box
 
 -- Sequential scan over blocks of IP networks.
-select network, r.city.names.en
-from read_mmdb('./GeoLite2-City.mmdb')
-where r.city.names.en != ''
-limit 1;
+SELECT network, r.city.names.en
+FROM read_mmdb('./GeoLite2-City.mmdb')
+WHERE r.city.names.en != ''
+LIMIT 1;
 
 ┌─────────────┬───────────┐
 │   network   │    en     │
@@ -41,7 +41,7 @@ limit 1;
 └─────────────┴───────────┘
 
 -- Look up a record by an IP address.
-select geolite_city('./GeoLite2-City.mmdb', '1.0.64.0').city.names.en;
+SELECT geolite_city('./GeoLite2-City.mmdb', '1.0.64.0').city.names.en;
 ┌────────────────────────────────────────────────────────────────────────┐
 │ (((geolite_city('./GeoLite2-City.mmdb', '1.0.64.0')).city)."names").en │
 ├────────────────────────────────────────────────────────────────────────┤
@@ -51,7 +51,7 @@ select geolite_city('./GeoLite2-City.mmdb', '1.0.64.0').city.names.en;
 
 You might need to update [duckdb.zig](./src/duckdb.zig)
 if there are breaking changes in
-[duckdb_extension.h](./extension-template-c/duckdb_capi/duckdb_extension.h).
+[duckdb_extension.h](https://github.com/duckdb/extension-template-c/blob/main/duckdb_capi/duckdb_extension.h).
 
 ```sh
 $ zig translate-c ./extension-template-c/duckdb_capi/duckdb_extension.h > src/duckdb.zig
@@ -63,10 +63,11 @@ Kudos to @habedi for making
 ## Usage
 
 The extension should work on `macos` and `linux` running on `aarch64` (ARM64) or `x86_64`.
-Here is how you can build the extension for ARM64 Linux.
+Here is how you can build the extension for ARM64 Linux glibc
+(use `musl` if you use Alpine Linux).
 
 ```sh
-$ zig build -Doptimize=ReleaseFast -Dtarget=aarch64-linux
+$ zig build -Doptimize=ReleaseFast -Dtarget=aarch64-linux-gnu
 $ duckdb -unsigned
 LOAD './zig-out/lib/maxmind.duckdb_extension';
 ```

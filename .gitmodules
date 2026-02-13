@@ -1,3 +1,6 @@
 [submodule "extension-template-c"]
 	path = extension-template-c
 	url = https://github.com/duckdb/extension-template-c
+[submodule "test-data"]
+	path = test-data
+	url = https://github.com/maxmind/MaxMind-DB
