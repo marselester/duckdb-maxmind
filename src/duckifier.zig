@@ -121,7 +121,7 @@ pub fn writeValue(comptime T: type, value: T, vector: c.duckdb_vector, row: u64)
             if (value) |v| {
                 writeValue(opt.child, v, vector, row);
             } else {
-                setNull(vector, row);
+                writeNull(opt.child, vector, row);
             }
         },
         .@"struct" => {
@@ -152,7 +152,51 @@ pub fn writeValue(comptime T: type, value: T, vector: c.duckdb_vector, row: u64)
     }
 }
 
-pub fn setNull(vector: c.duckdb_vector, row: u64) void {
+/// Sets a row to NULL in a DuckDB vector, recursively initializing all nested
+/// child vectors (struct fields, list/map entries) to avoid uninitialized data
+/// that would cause DuckDB to crash during result serialization.
+pub fn writeNull(comptime T: type, vector: c.duckdb_vector, row: u64) void {
+    setValidity(vector, row);
+
+    switch (T) {
+        []const bool, u8, u16, u32, u64, i32, f32, f64 => return,
+        else => {},
+    }
+
+    switch (@typeInfo(T)) {
+        .optional => |opt| writeNull(opt.child, vector, row),
+        .@"struct" => {
+            // MAP or LIST: write an empty list entry so the offset/length aren't garbage.
+            if (@hasDecl(T, "KV") or @hasDecl(T, "Slice")) {
+                const current_size = api.duckdb_list_vector_get_size.?(vector);
+                const entries: [*]c.duckdb_list_entry = @ptrCast(@alignCast(
+                    api.duckdb_vector_get_data.?(vector),
+                ));
+
+                entries[row] = .{
+                    .offset = current_size,
+                    .length = 0,
+                };
+                return;
+            }
+
+            // STRUCT: recurse into all children.
+            inline for (std.meta.fields(T)) |f| {
+                if (f.name[0] == '_') {
+                    continue;
+                }
+
+                const idx = duckdbFieldIndex(T, f.name);
+                const child_vec = api.duckdb_struct_vector_get_child.?(vector, idx);
+
+                writeNull(f.type, child_vec, row);
+            }
+        },
+        else => {},
+    }
+}
+
+fn setValidity(vector: c.duckdb_vector, row: u64) void {
     api.duckdb_vector_ensure_validity_writable.?(vector);
 
     const validity = api.duckdb_vector_get_validity.?(vector);

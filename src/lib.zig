@@ -327,6 +327,8 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
             const path = path_ptr[0..path_len];
 
             var db = maxminddb.Reader.mmap(allocator, path) catch {
+                // TODO: we should be able to return an error here.
+                nullifyOutput(T, output, input_size);
                 api.duckdb_function_set_error.?(info, "open mmdb");
                 return;
             };
@@ -343,12 +345,12 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
                 const ip_str = ip_ptr[0..ip_len];
 
                 const ip = std.net.Address.parseIp(ip_str, 0) catch {
-                    duckifier.setNull(output, i);
+                    duckifier.writeNull(T, output, i);
                     continue;
                 };
 
                 const record = db.lookup(arena_allocator, T, &ip) catch {
-                    duckifier.setNull(output, i);
+                    duckifier.writeNull(T, output, i);
                     continue;
                 };
 
@@ -358,4 +360,11 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
             }
         }
     }.callback;
+}
+
+fn nullifyOutput(comptime T: type, output: c.duckdb_vector, size: u64) void {
+    var i: u64 = 0;
+    while (i < size) : (i += 1) {
+        duckifier.writeNull(T, output, i);
+    }
 }
