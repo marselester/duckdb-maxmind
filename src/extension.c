@@ -3,10 +3,12 @@
 
 DUCKDB_EXTENSION_EXTERN
 
-// Forward declare the Zig-implemented registration function.
-// This symbol is exported from lib.zig with `pub export fn register_table_function`
-// and C calling convention, so the C linker can resolve it at link time.
-extern duckdb_state register_table_function(duckdb_connection conn);
+// Forward declare the Zig-implemented registration functions.
+// These symbols are exported from lib.zig with `pub export fn register_read_function`
+// and `pub export fn register_lookup_functions` respectively,
+// both with C calling convention, so the C linker can resolve them at link time.
+extern duckdb_state register_read_function(duckdb_connection conn);
+extern duckdb_state register_lookup_functions(duckdb_connection conn);
 
 // Define the extension version as a macro, which is set by the zig build.
 const char *version = EXTENSION_VERSION;
@@ -41,8 +43,14 @@ DUCKDB_EXTENSION_ENTRYPOINT(
     struct duckdb_extension_access *access
 ) {
     // Register the read_mmdb() table function with DuckDB.
-    if (register_table_function(conn) == DuckDBError) {
+    if (register_read_function(conn) == DuckDBError) {
         access->set_error(info, "Failed to register read_mmdb function");
+        return false;
+    }
+
+    // Register the lookup scalar functions with DuckDB.
+    if (register_lookup_functions(conn) == DuckDBError) {
+        access->set_error(info, "Failed to register lookup functions");
         return false;
     }
 

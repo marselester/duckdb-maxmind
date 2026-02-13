@@ -28,6 +28,7 @@ Try `.mode line` if `.mode box` truncates the output.
 ```sql
 .mode box
 
+-- Sequential scan over blocks of IP networks.
 select network, r.city.names.en
 from read_mmdb('./GeoLite2-City.mmdb')
 where r.city.names.en != ''
@@ -38,6 +39,14 @@ limit 1;
 ├─────────────┼───────────┤
 │ 1.0.64.0/20 │ Hiroshima │
 └─────────────┴───────────┘
+
+-- Look up a record by an IP address.
+select geolite_city('./GeoLite2-City.mmdb', '1.0.64.0').city.names.en;
+┌────────────────────────────────────────────────────────────────────────┐
+│ (((geolite_city('./GeoLite2-City.mmdb', '1.0.64.0')).city)."names").en │
+├────────────────────────────────────────────────────────────────────────┤
+│ Hiroshima                                                              │
+└────────────────────────────────────────────────────────────────────────┘
 ```
 
 You might need to update [duckdb.zig](./src/duckdb.zig)
@@ -64,3 +73,25 @@ LOAD './zig-out/lib/maxmind.duckdb_extension';
 
 Alternatively, you can download the extension from the latest
 [CI run](https://github.com/marselester/duckdb-maxmind/actions).
+
+Table functions:
+
+- `read_mmdb(path)`
+
+Scalar functions:
+
+- `geolite_city(path, ip)`
+- `geolite_country(path, ip)`
+- `geolite_asn(path, ip)`
+- `geoip_city(path, ip)`
+- `geoip_country(path, ip)`
+- `geoip_enterprise(path, ip)`
+- `geoip_isp(path, ip)`
+- `geoip_connection_type(path, ip)`
+- `geoip_anonymous_ip(path, ip)`
+- `geoip_anonymous_plus(path, ip)`
+- `geoip_ip_risk(path, ip)`
+- `geoip_densityincome(path, ip)`
+- `geoip_domain(path, ip)`
+- `geoip_static_ip_score(path, ip)`
+- `geoip_user_count(path, ip)`
