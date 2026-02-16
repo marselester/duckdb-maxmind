@@ -202,6 +202,7 @@ fn scanCallback(info: c.duckdb_function_info, output: c.duckdb_data_chunk) callc
             const record_vec = api.duckdb_data_chunk_get_vector.?(output, 1);
 
             var i: u64 = 0;
+            var buf: [64]u8 = undefined;
             const chunk_size: u64 = api.duckdb_vector_size.?();
             while (i < chunk_size) : (i += 1) {
                 const item = init_data.it.next() catch |err| {
@@ -219,8 +220,10 @@ fn scanCallback(info: c.duckdb_function_info, output: c.duckdb_data_chunk) callc
                 }
 
                 // Write network column.
-                var buf: [64]u8 = undefined;
-                const net_str = formatNetwork(item.net, &buf);
+                const net_str = std.fmt.bufPrint(&buf, "{f}", .{item.net}) catch |err| {
+                    api.duckdb_function_set_error.?(info, @errorName(err).ptr);
+                    return;
+                };
                 api.duckdb_vector_assign_string_element_len.?(network_vec, i, net_str.ptr, net_str.len);
 
                 // Write record column.
@@ -231,36 +234,6 @@ fn scanCallback(info: c.duckdb_function_info, output: c.duckdb_data_chunk) callc
             api.duckdb_data_chunk_set_size.?(output, i);
         },
     }
-}
-
-fn formatNetwork(net: maxminddb.Network, buf: []u8) []const u8 {
-    return switch (net.ip.any.family) {
-        std.posix.AF.INET => {
-            const b = std.mem.asBytes(&net.ip.in.sa.addr);
-            return std.fmt.bufPrint(buf, "{}.{}.{}.{}/{}", .{
-                b[0], b[1], b[2], b[3], net.prefix_len,
-            }) catch "";
-        },
-        std.posix.AF.INET6 => {
-            const b = net.ip.in6.sa.addr;
-            return std.fmt.bufPrint(
-                buf,
-                "{x:0>4}:{x:0>4}:{x:0>4}:{x:0>4}:{x:0>4}:{x:0>4}:{x:0>4}:{x:0>4}/{}",
-                .{
-                    std.mem.readInt(u16, b[0..2], .big),
-                    std.mem.readInt(u16, b[2..4], .big),
-                    std.mem.readInt(u16, b[4..6], .big),
-                    std.mem.readInt(u16, b[6..8], .big),
-                    std.mem.readInt(u16, b[8..10], .big),
-                    std.mem.readInt(u16, b[10..12], .big),
-                    std.mem.readInt(u16, b[12..14], .big),
-                    std.mem.readInt(u16, b[14..16], .big),
-                    net.prefix_len,
-                },
-            ) catch "";
-        },
-        else => "",
-    };
 }
 
 pub export fn register_lookup_functions(conn: c.duckdb_connection) callconv(.c) c.duckdb_state {
