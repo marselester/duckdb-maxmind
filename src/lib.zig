@@ -6,8 +6,6 @@ const duckifier = @import("duckifier.zig");
 extern const duckdb_ext_api: c.duckdb_ext_api_v1;
 const api = &duckdb_ext_api;
 
-// Use the C allocator so that memory allocated here is compatible with C callbacks.
-// DuckDB will call our destroy functions from C code.
 const allocator = std.heap.c_allocator;
 
 // Creates, configures, and registers the read_mmdb() table function with DuckDB.
@@ -65,8 +63,8 @@ fn bindCallback(info: c.duckdb_bind_info) callconv(.c) void {
     defer api.duckdb_free.?(@ptrCast(path_cstr));
     const path: []const u8 = std.mem.span(path_cstr);
 
-    var db = maxminddb.Reader.mmap(allocator, path) catch {
-        api.duckdb_bind_set_error.?(info, "open mmdb");
+    var db = maxminddb.Reader.mmap(allocator, path) catch |err| {
+        api.duckdb_bind_set_error.?(info, @errorName(err).ptr);
         return;
     };
     defer db.unmap();
@@ -154,8 +152,8 @@ fn initCallback(info: c.duckdb_init_info) callconv(.c) void {
                 return;
             };
 
-            init_data.db = maxminddb.Reader.mmap(allocator, bind_data.path) catch {
-                api.duckdb_init_set_error.?(info, "open mmdb");
+            init_data.db = maxminddb.Reader.mmap(allocator, bind_data.path) catch |err| {
+                api.duckdb_init_set_error.?(info, @errorName(err).ptr);
                 allocator.destroy(init_data);
                 return;
             };
@@ -164,8 +162,8 @@ fn initCallback(info: c.duckdb_init_info) callconv(.c) void {
                 allIPv6
             else
                 allIPv4;
-            init_data.it = init_data.db.within(allocator, T, network) catch {
-                api.duckdb_init_set_error.?(info, "traverse mmdb");
+            init_data.it = init_data.db.within(allocator, T, network) catch |err| {
+                api.duckdb_init_set_error.?(info, @errorName(err).ptr);
                 init_data.db.unmap();
                 allocator.destroy(init_data);
                 return;
@@ -206,8 +204,8 @@ fn scanCallback(info: c.duckdb_function_info, output: c.duckdb_data_chunk) callc
             var i: u64 = 0;
             const chunk_size: u64 = api.duckdb_vector_size.?();
             while (i < chunk_size) : (i += 1) {
-                const item = init_data.it.next() catch {
-                    api.duckdb_function_set_error.?(info, "next item");
+                const item = init_data.it.next() catch |err| {
+                    api.duckdb_function_set_error.?(info, @errorName(err).ptr);
                     return;
                 } orelse {
                     // Mark that all rows have been emitted so the next call returns an empty chunk.
@@ -326,10 +324,8 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
             const path_ptr = api.duckdb_string_t_data.?(&path_data[0]);
             const path = path_ptr[0..path_len];
 
-            var db = maxminddb.Reader.mmap(allocator, path) catch {
-                // TODO: we should be able to return an error here.
-                nullifyOutput(T, output, input_size);
-                api.duckdb_function_set_error.?(info, "open mmdb");
+            var db = maxminddb.Reader.mmap(allocator, path) catch |err| {
+                api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
                 return;
             };
             defer db.unmap();
@@ -349,9 +345,14 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
                     continue;
                 };
 
-                const record = db.lookup(arena_allocator, T, &ip) catch {
-                    duckifier.writeNull(T, output, i);
-                    continue;
+                const record = db.lookup(arena_allocator, T, &ip) catch |err| {
+                    if (err == maxminddb.Error.AddressNotFound) {
+                        duckifier.writeNull(T, output, i);
+                        continue;
+                    }
+
+                    api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
+                    return;
                 };
 
                 duckifier.writeValue(T, record, output, i);
@@ -360,11 +361,4 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
             }
         }
     }.callback;
-}
-
-fn nullifyOutput(comptime T: type, output: c.duckdb_vector, size: u64) void {
-    var i: u64 = 0;
-    while (i < size) : (i += 1) {
-        duckifier.writeNull(T, output, i);
-    }
 }
