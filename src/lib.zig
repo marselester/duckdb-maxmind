@@ -19,10 +19,14 @@ pub export fn register_read_function(conn: c.duckdb_connection) callconv(.c) c.d
     // Users will call the function SELECT * FROM read_mmdb('/path/to/my.mmdb').
     api.duckdb_table_function_set_name.?(tf, "read_mmdb");
 
-    // Declare one VARCHAR parameter for the file path argument.
+    // Declare VARCHAR parameters for the file path and optional network filter.
     const varchar_type = api.duckdb_create_logical_type.?(c.DUCKDB_TYPE_VARCHAR);
     defer api.duckdb_destroy_logical_type.?(@constCast(&varchar_type));
+
+    // Positional: file path to the mmdb database.
     api.duckdb_table_function_add_parameter.?(tf, varchar_type);
+    // Optional named: network filter, e.g., read_mmdb('my.mmdb', network='1.0.0.0/8').
+    api.duckdb_table_function_add_named_parameter.?(tf, "network", varchar_type);
 
     // Wire up the required callbacks:
     // - bind: called during planning to declare the result schema
@@ -42,6 +46,7 @@ const BindData = struct {
     // The file path passed as the first argument to read_mmdb('/my/path').
     // It's heap-allocated with a null terminator so it can be passed to C APIs.
     path: [:0]u8,
+    network: maxminddb.Network,
     db_type: maxminddb.DatabaseType,
 };
 
@@ -64,11 +69,36 @@ fn bindCallback(info: c.duckdb_bind_info) callconv(.c) void {
     defer api.duckdb_free.?(@ptrCast(path_cstr));
     const path: []const u8 = std.mem.span(path_cstr);
 
+    // Parse optional network argument.
+    // It defaults to 0.0.0.0 for IPv4 and :: for IPv6 databases.
+    var network: ?maxminddb.Network = null;
+    var network_param = api.duckdb_bind_get_named_parameter.?(info, "network");
+    if (network_param != null) {
+        defer api.duckdb_destroy_value.?(&network_param);
+
+        if (api.duckdb_get_varchar.?(network_param)) |network_cstr| {
+            defer api.duckdb_free.?(@ptrCast(network_cstr));
+            const network_str: []const u8 = std.mem.span(network_cstr);
+
+            network = maxminddb.Network.parse(network_str) catch {
+                api.duckdb_bind_set_error.?(info, "parsing network");
+                return;
+            };
+        }
+    }
+
     var db = maxminddb.Reader.mmap(allocator, path) catch |err| {
         api.duckdb_bind_set_error.?(info, @errorName(err).ptr);
         return;
     };
     defer db.unmap();
+
+    if (network == null) {
+        network = if (db.metadata.ip_version == 6)
+            maxminddb.Network.all_ipv6
+        else
+            maxminddb.Network.all_ipv4;
+    }
 
     const db_type = maxminddb.DatabaseType.new(db.metadata.database_type) orelse {
         api.duckdb_bind_set_error.?(info, "unsupported mmdb database type");
@@ -107,6 +137,8 @@ fn bindCallback(info: c.duckdb_bind_info) callconv(.c) void {
         return;
     };
 
+    bind_data.network = network.?;
+
     bind_data.db_type = db_type;
 
     api.duckdb_bind_set_bind_data.?(info, bind_data, destroyBindData);
@@ -139,13 +171,6 @@ fn InitData(comptime T: type) type {
         }
     };
 }
-
-const allIPv4 = maxminddb.Network{
-    .ip = std.net.Address.parseIp("0.0.0.0", 0) catch unreachable,
-};
-const allIPv6 = maxminddb.Network{
-    .ip = std.net.Address.parseIp("::", 0) catch unreachable,
-};
 
 // The Init callback is called once before scanning starts.
 // It's used to set up per-thread scan state.
@@ -185,13 +210,17 @@ fn initCallback(info: c.duckdb_init_info) callconv(.c) void {
             }
 
             // Use null when all fields are projected (no filtering needed).
-            const only: ?maxminddb.Fields = if (fields.equal(maxminddb.Fields.all(T))) null else fields;
-
-            const network = if (init_data.db.metadata.ip_version == 6)
-                allIPv6
+            const only: ?maxminddb.Fields = if (fields.equal(maxminddb.Fields.all(T)))
+                null
             else
-                allIPv4;
-            init_data.it = init_data.db.within(allocator, T, network, .{ .only = only }) catch |err| {
+                fields;
+
+            init_data.it = init_data.db.within(
+                allocator,
+                T,
+                bind_data.network,
+                .{ .only = only },
+            ) catch |err| {
                 api.duckdb_init_set_error.?(info, @errorName(err).ptr);
                 init_data.db.unmap();
                 allocator.destroy(init_data);
