@@ -1,5 +1,6 @@
 const std = @import("std");
 const c = @import("duckdb");
+const maxminddb = @import("maxminddb");
 
 extern const duckdb_ext_api: c.duckdb_ext_api_v1;
 const api = &duckdb_ext_api;
@@ -41,16 +42,10 @@ pub fn createDuckDBType(comptime T: type) c.duckdb_logical_type {
             }
 
             // STRUCT
-            const n = fieldCount(T);
+            const n = maxminddb.Fields.count(T);
             var member_types: [n]c.duckdb_logical_type = undefined;
             var member_names: [n][*c]const u8 = undefined;
-            inline for (std.meta.fields(T)) |f| {
-                // Skip struct fields whose name starts with an underscore, e.g., _arena.
-                if (f.name[0] == '_') {
-                    continue;
-                }
-
-                const idx = duckdbFieldIndex(T, f.name);
+            inline for (maxminddb.Fields.entries(T), 0..) |f, idx| {
                 member_types[idx] = createDuckDBType(f.type);
                 member_names[idx] = @ptrCast(f.name.ptr);
             }
@@ -68,36 +63,6 @@ pub fn createDuckDBType(comptime T: type) c.duckdb_logical_type {
         },
         else => @compileError("unsupported type: " ++ @typeName(T)),
     }
-}
-
-/// Returns the number of fields in a struct.
-fn fieldCount(comptime T: type) comptime_int {
-    var count = 0;
-    for (std.meta.fields(T)) |f| {
-        if (f.name[0] != '_') {
-            count += 1;
-        }
-    }
-
-    return count;
-}
-
-/// Returns the DuckDB child index for a named struct field.
-fn duckdbFieldIndex(comptime T: type, comptime name: [:0]const u8) comptime_int {
-    var idx = 0;
-    for (std.meta.fields(T)) |f| {
-        if (f.name[0] == '_') {
-            continue;
-        }
-
-        if (std.mem.eql(u8, f.name, name)) {
-            return idx;
-        }
-
-        idx += 1;
-    }
-
-    unreachable;
 }
 
 /// Writes a value to a DuckDB vector at the given row index.
@@ -138,12 +103,7 @@ pub fn writeValue(comptime T: type, value: T, vector: c.duckdb_vector, row: u64)
             }
 
             // STRUCT
-            inline for (std.meta.fields(T)) |f| {
-                if (f.name[0] == '_') {
-                    continue;
-                }
-
-                const idx = duckdbFieldIndex(T, f.name);
+            inline for (maxminddb.Fields.entries(T), 0..) |f, idx| {
                 const child_vec = api.duckdb_struct_vector_get_child.?(vector, idx);
                 writeValue(f.type, @field(value, f.name), child_vec, row);
             }
@@ -184,19 +144,31 @@ pub fn writeNull(comptime T: type, vector: c.duckdb_vector, row: u64) void {
             }
 
             // STRUCT: recurse into all children.
-            inline for (std.meta.fields(T)) |f| {
-                if (f.name[0] == '_') {
-                    continue;
-                }
-
-                const idx = duckdbFieldIndex(T, f.name);
+            inline for (maxminddb.Fields.entries(T), 0..) |f, idx| {
                 const child_vec = api.duckdb_struct_vector_get_child.?(vector, idx);
-
                 writeNull(f.type, child_vec, row);
             }
         },
         else => {},
     }
+}
+
+/// Writes a single record field to a DuckDB vector by its DuckDB field index.
+pub fn writeRecordField(
+    comptime T: type,
+    record: T,
+    vector: c.duckdb_vector,
+    row: u64,
+    field_idx: u64,
+) void {
+    inline for (maxminddb.Fields.entries(T), 0..) |f, idx| {
+        if (idx == field_idx) {
+            writeValue(f.type, @field(record, f.name), vector, row);
+            return;
+        }
+    }
+
+    unreachable;
 }
 
 /// Writes a DuckDB MAP vector.

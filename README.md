@@ -29,9 +29,10 @@ Try `.mode line` if `.mode box` truncates the output.
 .mode box
 
 -- Sequential scan over blocks of IP networks.
-SELECT network, r.city.names.en
+-- Record fields are flattened into top-level columns (e.g., city, country, location).
+SELECT network, city.names.en
 FROM read_mmdb('./GeoLite2-City.mmdb')
-WHERE r.city.names.en != ''
+WHERE city.names.en IS NOT NULL
 LIMIT 1;
 
 ┌─────────────┬───────────┐
@@ -41,12 +42,12 @@ LIMIT 1;
 └─────────────┴───────────┘
 
 -- Look up a record by an IP address.
-SELECT geolite_city('./GeoLite2-City.mmdb', '1.0.64.0').city.names.en;
-┌────────────────────────────────────────────────────────────────────────┐
-│ (((geolite_city('./GeoLite2-City.mmdb', '1.0.64.0')).city)."names").en │
-├────────────────────────────────────────────────────────────────────────┤
-│ Hiroshima                                                              │
-└────────────────────────────────────────────────────────────────────────┘
+SELECT geolite_city('./GeoLite2-City.mmdb', '1.0.64.0').city.names.en AS en;
+┌───────────┐
+│    en     │
+├───────────┤
+│ Hiroshima │
+└───────────┘
 ```
 
 You might need to update [duckdb.zig](./src/duckdb.zig)
