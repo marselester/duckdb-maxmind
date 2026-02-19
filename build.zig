@@ -1,7 +1,8 @@
 const std = @import("std");
+const zon = @import("build.zig.zon");
 
 const extension_name = "maxmind";
-const extension_version = "v0.0.0";
+const extension_version = "v" ++ zon.version;
 const extension_api_version = "v1.2.0";
 
 pub fn build(b: *std.Build) void {
