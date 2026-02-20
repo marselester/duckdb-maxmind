@@ -47,6 +47,10 @@ jobs:
             artifact: duckdb_maxmind_linux_arm64
           - target: x86_64-linux-gnu
             artifact: duckdb_maxmind_linux_amd64
+          - target: aarch64-linux-musl
+            artifact: duckdb_maxmind_linux_arm64_musl
+          - target: x86_64-linux-musl
+            artifact: duckdb_maxmind_linux_amd64_musl
           - target: aarch64-macos
             artifact: duckdb_maxmind_osx_arm64
           - target: x86_64-macos
@@ -65,3 +69,37 @@ jobs:
         with:
           name: ${{ matrix.artifact }}
           path: zig-out/lib/maxmind.duckdb_extension
+
+  deploy:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/download-artifact@v7
+      - name: Prepare repository structure
+        # DuckDB fetches an extension from a URL path based on its own version,
+        # so we need to publish a platform binary under each version.
+        # The extension should work with DuckDB versions >= 1.2.0.
+        run: |
+          VERSIONS=$(gh api repos/duckdb/duckdb/releases --paginate --jq '.[].tag_name' | awk '$1 >= "v1.2.0"')
+          PLATFORMS="osx_arm64 osx_amd64 linux_arm64 linux_amd64 linux_arm64_musl linux_amd64_musl"
+          for version in $VERSIONS; do
+            for platform in $PLATFORMS; do
+              mkdir -p repo/$version/$platform
+              gzip -9 -c duckdb_maxmind_${platform}/maxmind.duckdb_extension > repo/$version/$platform/maxmind.duckdb_extension.gz
+            done
+          done
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: repo
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
