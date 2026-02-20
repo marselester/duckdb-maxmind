@@ -78,7 +78,8 @@ Alternatively, you can download the extension from the latest
 
 Table functions:
 
-- `read_mmdb(path)`
+- `read_mmdb(path)` also supports optional `network`, e.g., `read_mmdb(path, network='1.0.0.0/8')`.
+  By default it would use `0.0.0.0` or `::` depending on IP version set in db metadata.
 
 Scalar functions:
 
