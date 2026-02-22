@@ -210,7 +210,7 @@ fn initCallback(info: c.duckdb_init_info) callconv(.c) void {
             }
 
             // Use null when all fields are projected (no filtering needed).
-            const only: ?maxminddb.Fields = if (fields.equal(maxminddb.Fields.all(T)))
+            const only: ?maxminddb.Fields = if (fields.mask == (maxminddb.Fields.all(T)).mask)
                 null
             else
                 fields;
@@ -267,11 +267,6 @@ fn scanCallback(info: c.duckdb_function_info, output: c.duckdb_data_chunk) callc
                     init_data.done = true;
                     break;
                 };
-                defer {
-                    if (@hasDecl(T, "deinit")) {
-                        item.record.deinit();
-                    }
-                }
 
                 // Write only projected columns.
                 var out_idx: u64 = 0;
@@ -301,7 +296,7 @@ pub export fn register_lookup_functions(conn: c.duckdb_connection) callconv(.c) 
     const varchar_type = api.duckdb_create_logical_type.?(c.DUCKDB_TYPE_VARCHAR);
     defer api.duckdb_destroy_logical_type.?(@constCast(&varchar_type));
 
-    // Register one function per database type, e.g., users can call SELECT geolite2_city(path, ip).
+    // Register one function per database type, e.g., geolite_city(path, ip, fields).
     //
     // Once duckdb_scalar_function_set_bind() is available in C extensions API,
     // we should be able to consolidate them into a single function lookup_mmdb().
@@ -315,6 +310,7 @@ pub export fn register_lookup_functions(conn: c.duckdb_connection) callconv(.c) 
         api.duckdb_scalar_function_set_name.?(f, field.name);
         api.duckdb_scalar_function_add_parameter.?(f, varchar_type); // path
         api.duckdb_scalar_function_add_parameter.?(f, varchar_type); // ip
+        api.duckdb_scalar_function_add_parameter.?(f, varchar_type); // fields
 
         const return_type = duckifier.createDuckDBType(T);
         defer api.duckdb_destroy_logical_type.?(@constCast(&return_type));
@@ -330,7 +326,7 @@ pub export fn register_lookup_functions(conn: c.duckdb_connection) callconv(.c) 
     return c.DuckDBSuccess;
 }
 
-/// Returns a scalar function callback for a specific record type.
+// Returns a scalar function callback for a specific record type.
 fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
     return struct {
         fn callback(
@@ -345,6 +341,7 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
 
             const path_vec = api.duckdb_data_chunk_get_vector.?(input, 0);
             const ip_vec = api.duckdb_data_chunk_get_vector.?(input, 1);
+            const fields_vec = api.duckdb_data_chunk_get_vector.?(input, 2);
 
             const path_data: [*]c.duckdb_string_t = @ptrCast(@alignCast(
                 api.duckdb_vector_get_data.?(path_vec),
@@ -352,11 +349,38 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
             const ip_data: [*]c.duckdb_string_t = @ptrCast(@alignCast(
                 api.duckdb_vector_get_data.?(ip_vec),
             ));
+            const fields_data: [*]c.duckdb_string_t = @ptrCast(@alignCast(
+                api.duckdb_vector_get_data.?(fields_vec),
+            ));
 
-            // Read path from row 0 (constant across the batch).
+            // Read path and fields from row 0 (constant across the batch).
             const path_len = api.duckdb_string_t_length.?(path_data[0]);
             const path_ptr = api.duckdb_string_t_data.?(&path_data[0]);
             const path = path_ptr[0..path_len];
+
+            const fields_len = api.duckdb_string_t_length.?(fields_data[0]);
+            const fields_str = if (fields_len > 0)
+                api.duckdb_string_t_data.?(&fields_data[0])[0..fields_len]
+            else
+                "";
+
+            const only: ?maxminddb.Fields = switch (maxminddb.Fields.parse(T, fields_str, ',')) {
+                .fields => |f| if (f.mask == 0 or f.mask == maxminddb.Fields.all(T).mask)
+                    null
+                else
+                    f,
+                .unknown_field => |bad_name| {
+                    var err_buf: [128]u8 = undefined;
+                    const err_msg = std.fmt.bufPrintZ(
+                        &err_buf,
+                        "unknown field '{s}'",
+                        .{bad_name},
+                    ) catch "unknown field";
+
+                    api.duckdb_scalar_function_set_error.?(info, err_msg.ptr);
+                    return;
+                },
+            };
 
             var db = maxminddb.Reader.mmap(allocator, path) catch |err| {
                 api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
@@ -379,7 +403,7 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
                     continue;
                 };
 
-                const result = db.lookup(arena_allocator, T, ip, .{}) catch |err| {
+                const result = db.lookup(arena_allocator, T, ip, .{ .only = only }) catch |err| {
                     api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
                     return;
                 } orelse {

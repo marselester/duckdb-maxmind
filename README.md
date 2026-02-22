@@ -33,7 +33,8 @@ LIMIT 1;
 └─────────────┴───────────┘
 
 -- Look up a record by an IP address.
-SELECT geolite_city('./GeoLite2-City.mmdb', '1.0.64.0').city.names.en AS en;
+-- Pass an empty string as the third parameter to decode all fields.
+SELECT geolite_city('./GeoLite2-City.mmdb', '1.0.64.0', '').city.names.en AS en;
 ┌───────────┐
 │    en     │
 ├───────────┤
@@ -64,28 +65,30 @@ $ duckdb -unsigned
 LOAD './zig-out/lib/maxmind.duckdb_extension';
 ```
 
-Table functions:
+Table function `read_mmdb(path)` scans all IP network blocks in the database.
+Record fields are flattened into top-level columns such as city, country, location.
+Use the optional `network` parameter to limit the scan,
+for example, `read_mmdb(path, network='1.0.0.0/8')`.
 
-- `read_mmdb(path)` also supports optional `network`, e.g., `read_mmdb(path, network='1.0.0.0/8')`.
-  By default it would use `0.0.0.0` or `::` depending on IP version set in db metadata.
+Scalar functions take three parameters: `path`, `ip`, and `fields`.
+The `fields` parameter is a comma-separated list of record fields to decode.
+Pass an empty string to decode all fields.
 
-Scalar functions:
-
-- `geolite_city(path, ip)`
-- `geolite_country(path, ip)`
-- `geolite_asn(path, ip)`
-- `geoip_city(path, ip)`
-- `geoip_country(path, ip)`
-- `geoip_enterprise(path, ip)`
-- `geoip_isp(path, ip)`
-- `geoip_connection_type(path, ip)`
-- `geoip_anonymous_ip(path, ip)`
-- `geoip_anonymous_plus(path, ip)`
-- `geoip_ip_risk(path, ip)`
-- `geoip_densityincome(path, ip)`
-- `geoip_domain(path, ip)`
-- `geoip_static_ip_score(path, ip)`
-- `geoip_user_count(path, ip)`
+- `geolite_city(path, ip, fields)`
+- `geolite_country(path, ip, fields)`
+- `geolite_asn(path, ip, fields)`
+- `geoip_city(path, ip, fields)`
+- `geoip_country(path, ip, fields)`
+- `geoip_enterprise(path, ip, fields)`
+- `geoip_isp(path, ip, fields)`
+- `geoip_connection_type(path, ip, fields)`
+- `geoip_anonymous_ip(path, ip, fields)`
+- `geoip_anonymous_plus(path, ip, fields)`
+- `geoip_ip_risk(path, ip, fields)`
+- `geoip_densityincome(path, ip, fields)`
+- `geoip_domain(path, ip, fields)`
+- `geoip_static_ip_score(path, ip, fields)`
+- `geoip_user_count(path, ip, fields)`
 
 ## Development
 
@@ -105,6 +108,54 @@ Make sure the extension works by running DuckDB interactive session.
 $ brew install duckdb
 $ zig build duckdb
 ```
+
+Run the lookup benchmark to catch regressions (1M random IPs against GeoLite2-City).
+
+```sh
+$ zig build benchmark_lookup
+```
+
+<details>
+
+<summary>All fields vs filtered</summary>
+
+```sh
+$ for i in $(seq 1 10); do
+    zig build benchmark_lookup -- GeoLite2-City.mmdb 1000000 \
+      2>&1 | grep 'Lookups Per Second'
+  done
+
+  echo '---'
+
+  for i in $(seq 1 10); do
+    zig build benchmark_lookup -- GeoLite2-City.mmdb 1000000 city \
+      2>&1 | grep 'Lookups Per Second'
+  done
+
+Lookups Per Second: 435031
+Lookups Per Second: 448831
+Lookups Per Second: 424320
+Lookups Per Second: 450519
+Lookups Per Second: 453749
+Lookups Per Second: 432921
+Lookups Per Second: 456187
+Lookups Per Second: 428405
+Lookups Per Second: 450528
+Lookups Per Second: 424362
+---
+Lookups Per Second: 762510
+Lookups Per Second: 810526
+Lookups Per Second: 796118
+Lookups Per Second: 819167
+Lookups Per Second: 768519
+Lookups Per Second: 812188
+Lookups Per Second: 807066
+Lookups Per Second: 729973
+Lookups Per Second: 824185
+Lookups Per Second: 809390
+```
+
+</details>
 
 You might need to update [duckdb.zig](./src/duckdb.zig)
 if there are breaking changes in
