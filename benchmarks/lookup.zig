@@ -3,6 +3,7 @@ const c = @cImport(@cInclude("duckdb.h"));
 
 const default_db_path = "GeoLite2-City.mmdb";
 const default_num_lookups: u64 = 1_000_000;
+const default_fields = "";
 
 pub fn main() !void {
     const alloc = std.heap.smp_allocator;
@@ -12,12 +13,15 @@ pub fn main() !void {
 
     var db_path: []const u8 = default_db_path;
     var num_lookups = default_num_lookups;
+    var fields: []const u8 = default_fields;
     if (args.len > 1) db_path = args[1];
     if (args.len > 2) num_lookups = try std.fmt.parseUnsigned(u64, args[2], 10);
+    if (args.len > 3) fields = args[3];
 
     std.debug.print("Benchmarking with:\n", .{});
     std.debug.print("  Database: {s}\n", .{db_path});
-    std.debug.print("  Lookups:  {d}\n\n", .{num_lookups});
+    std.debug.print("  Lookups:  {d}\n", .{num_lookups});
+    std.debug.print("  Fields:   '{s}'\n\n", .{fields});
 
     // Open DuckDB in-memory and load the extension.
     var db: c.duckdb_database = undefined;
@@ -64,8 +68,8 @@ pub fn main() !void {
     // Run the lookup as a single batched query.
     const lookup_q = try std.fmt.allocPrintSentinel(
         alloc,
-        "SELECT geolite_city('{s}', ip) FROM ips",
-        .{db_path},
+        "SELECT geolite_city('{s}', ip, '{s}') FROM ips",
+        .{ db_path, fields },
         0,
     );
     defer alloc.free(lookup_q);
