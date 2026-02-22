@@ -259,7 +259,7 @@ fn scanCallback(info: c.duckdb_function_info, output: c.duckdb_data_chunk) callc
             var buf: [64]u8 = undefined;
             const chunk_size: u64 = api.duckdb_vector_size.?();
             while (i < chunk_size) : (i += 1) {
-                const item = init_data.it.next(allocator) catch |err| {
+                const item = init_data.it.next() catch |err| {
                     api.duckdb_function_set_error.?(info, @errorName(err).ptr);
                     return;
                 } orelse {
@@ -280,13 +280,13 @@ fn scanCallback(info: c.duckdb_function_info, output: c.duckdb_data_chunk) callc
                     const vec = api.duckdb_data_chunk_get_vector.?(output, out_idx);
 
                     if (col_idx == 0) {
-                        const net_str = std.fmt.bufPrint(&buf, "{f}", .{item.net}) catch |err| {
+                        const net_str = std.fmt.bufPrint(&buf, "{f}", .{item.network}) catch |err| {
                             api.duckdb_function_set_error.?(info, @errorName(err).ptr);
                             return;
                         };
                         api.duckdb_vector_assign_string_element_len.?(vec, i, net_str.ptr, net_str.len);
                     } else {
-                        duckifier.writeRecordField(T, item.record, vec, i, col_idx - 1);
+                        duckifier.writeRecordField(T, item.value, vec, i, col_idx - 1);
                     }
                 }
             }
@@ -379,17 +379,15 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
                     continue;
                 };
 
-                const record = db.lookup(arena_allocator, T, &ip, .{}) catch |err| {
-                    if (err == maxminddb.Error.AddressNotFound) {
-                        duckifier.writeNull(T, output, i);
-                        continue;
-                    }
-
+                const result = db.lookup(arena_allocator, T, ip, .{}) catch |err| {
                     api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
                     return;
+                } orelse {
+                    duckifier.writeNull(T, output, i);
+                    continue;
                 };
 
-                duckifier.writeValue(T, record, output, i);
+                duckifier.writeValue(T, result.value, output, i);
 
                 _ = arena.reset(std.heap.ArenaAllocator.ResetMode.retain_capacity);
             }
