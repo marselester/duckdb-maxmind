@@ -1,11 +1,11 @@
 .{
     .name = .duckdb_maxmind,
-    .version = "0.2.0",
+    .version = "0.3.0",
     .fingerprint = 0x3637936961daa956,
     .dependencies = .{
         .maxminddb = .{
-            .url = "git+https://github.com/marselester/maxminddb.zig?ref=master#dc48f3deb8f5be5eaaf34e4c1d297b155a6029c9",
-            .hash = "maxminddb-0.2.0-HBInulFsAQDE7bYt2PC6zQSAwvHUO7q98n09W4vWLPVP",
+            .url = "git+https://github.com/marselester/maxminddb.zig?ref=master#c5504db6445c66db029147e3ba17434404e29fb1",
+            .hash = "maxminddb-0.2.0-HBInuupsAQDaRnrxsYqN8EzIwYDxvZLIm7sGRqtZGVJQ",
         },
     },
     .paths = .{
