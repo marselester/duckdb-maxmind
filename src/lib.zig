@@ -65,6 +65,10 @@ fn bindCallback(info: c.duckdb_bind_info) callconv(.c) void {
     // Retrieve the file path argument read_mmdb('/my/path') at index 0.
     var path_param = api.duckdb_bind_get_parameter.?(info, 0);
     defer api.duckdb_destroy_value.?(&path_param);
+    if (api.duckdb_is_null_value.?(path_param)) {
+        api.duckdb_bind_set_error.?(info, "path must not be NULL");
+        return;
+    }
     const path_cstr: [*c]u8 = api.duckdb_get_varchar.?(path_param);
     defer api.duckdb_free.?(@ptrCast(path_cstr));
     const path: []const u8 = std.mem.span(path_cstr);
@@ -76,14 +80,16 @@ fn bindCallback(info: c.duckdb_bind_info) callconv(.c) void {
     if (network_param != null) {
         defer api.duckdb_destroy_value.?(&network_param);
 
-        if (api.duckdb_get_varchar.?(network_param)) |network_cstr| {
-            defer api.duckdb_free.?(@ptrCast(network_cstr));
-            const network_str: []const u8 = std.mem.span(network_cstr);
+        if (!api.duckdb_is_null_value.?(network_param)) {
+            if (api.duckdb_get_varchar.?(network_param)) |network_cstr| {
+                defer api.duckdb_free.?(@ptrCast(network_cstr));
+                const network_str: []const u8 = std.mem.span(network_cstr);
 
-            network = maxminddb.Network.parse(network_str) catch {
-                api.duckdb_bind_set_error.?(info, "parsing network");
-                return;
-            };
+                network = maxminddb.Network.parse(network_str) catch {
+                    api.duckdb_bind_set_error.?(info, "parsing network");
+                    return;
+                };
+            }
         }
     }
 
