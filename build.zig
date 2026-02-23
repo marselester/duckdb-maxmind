@@ -51,14 +51,14 @@ pub fn build(b: *std.Build) void {
 
     // Detect the library file extension based on target OS.
     // Windows DLLs go to bin, other platforms go to lib.
-    const lib_filename = libFilename(b, target, extension_name);
+    const lib_filename = duckdbLibFilename(b, target, extension_name);
     const lib_path = if (target.result.os.tag == .windows)
         b.getInstallPath(.bin, lib_filename)
     else
         b.getInstallPath(.lib, lib_filename);
 
     // Append DuckDB extension metadata (name, version, platform, API version).
-    const platform = detectPlatform(target);
+    const platform = duckdbPlatform(target);
     const add_metadata = b.addSystemCommand(&[_][]const u8{
         "python3",
         "extension-template-c/extension-ci-tools/scripts/append_extension_metadata.py",
@@ -116,16 +116,16 @@ pub fn build(b: *std.Build) void {
     }
 }
 
-fn detectPlatform(target: std.Build.ResolvedTarget) []const u8 {
+fn duckdbPlatform(target: std.Build.ResolvedTarget) []const u8 {
     return switch (target.result.cpu.arch) {
         .x86_64 => switch (target.result.os.tag) {
-            .linux => "linux_amd64",
+            .linux => if (target.result.abi == .musl) "linux_amd64_musl" else "linux_amd64",
             .macos => "osx_amd64",
             .windows => "windows_amd64",
             else => "unknown",
         },
         .aarch64 => switch (target.result.os.tag) {
-            .linux => "linux_arm64",
+            .linux => if (target.result.abi == .musl) "linux_arm64_musl" else "linux_arm64",
             .macos => "osx_arm64",
             .windows => "windows_arm64",
             else => "unknown",
@@ -134,7 +134,7 @@ fn detectPlatform(target: std.Build.ResolvedTarget) []const u8 {
     };
 }
 
-fn libFilename(b: *std.Build, target: std.Build.ResolvedTarget, name: []const u8) []const u8 {
+fn duckdbLibFilename(b: *std.Build, target: std.Build.ResolvedTarget, name: []const u8) []const u8 {
     return switch (target.result.os.tag) {
         .windows => b.fmt("{s}.dll", .{name}),
         .macos => b.fmt("lib{s}.dylib", .{name}),
