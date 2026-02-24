@@ -29,6 +29,6 @@ install_zig:
 	)
 
 build_extension_library_release: check_configure
-	$(ZIG) build -Doptimize=ReleaseFast
+	$(ZIG) build -Doptimize=ReleaseFast -Dcpu=baseline
 	mkdir -p $(EXTENSION_BUILD_PATH)/release/extension/$(EXTENSION_NAME)
 	cp zig-out/lib/$(EXTENSION_LIB_FILENAME) $(EXTENSION_BUILD_PATH)/release/$(EXTENSION_LIB_FILENAME)
