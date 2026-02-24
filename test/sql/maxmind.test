@@ -1,0 +1,144 @@
+# name: test/sql/maxmind.test
+# group: [maxmind]
+
+require maxmind
+
+query I
+SELECT city.names.en FROM read_mmdb('./test-data/test-data/GeoIP2-City-Test.mmdb') WHERE city.names.en = 'Boxford' LIMIT 1;
+----
+Boxford
+
+query I
+SELECT city.names.en FROM read_mmdb('./test-data/test-data/GeoIP2-City-Test.mmdb', network='89.160.20.0/24') LIMIT 1;
+----
+Linköping
+
+query I
+SELECT geolite_city('./test-data/test-data/GeoIP2-City-Test.mmdb', '89.160.20.128', '').city.names.en;
+----
+Linköping
+
+query I
+SELECT geolite_city('./test-data/test-data/GeoIP2-City-Test.mmdb', '89.160.20.128', 'city').city.names.en;
+----
+Linköping
+
+query I
+SELECT geolite_country('./test-data/test-data/GeoLite2-Country-Test.mmdb', '2.125.160.216', '').country.names.en;
+----
+United Kingdom
+
+query I
+SELECT geolite_asn('./test-data/test-data/GeoLite2-ASN-Test.mmdb', '1.0.0.0', '').autonomous_system_organization;
+----
+Google Inc.
+
+query I
+SELECT geoip_city('./test-data/test-data/GeoIP2-City-Test.mmdb', '2.2.3.0', '').city.names.en;
+----
+Boxford
+
+query I
+SELECT geoip_country('./test-data/test-data/GeoIP2-Country-Test.mmdb', '2.125.160.216', '').country.names.en;
+----
+United Kingdom
+
+query I
+SELECT geoip_enterprise('./test-data/test-data/GeoIP2-Enterprise-Test.mmdb', '2.125.160.216', '').city.names.en;
+----
+Boxford
+
+query I
+SELECT geoip_isp('./test-data/test-data/GeoIP2-ISP-Test.mmdb', '1.0.128.0', '').isp;
+----
+TOT Public Company Limited
+
+query I
+SELECT geoip_connection_type('./test-data/test-data/GeoIP2-Connection-Type-Test.mmdb', '1.0.0.0', '').connection_type;
+----
+Cable/DSL
+
+query I
+SELECT geoip_anonymous_ip('./test-data/test-data/GeoIP2-Anonymous-IP-Test.mmdb', '1.2.0.0', '').is_anonymous;
+----
+true
+
+query I
+SELECT geoip_anonymous_plus('./test-data/test-data/GeoIP-Anonymous-Plus-Test.mmdb', '1.2.0.0', '').is_anonymous;
+----
+true
+
+query I
+SELECT geoip_ip_risk('./test-data/test-data/GeoIP2-IP-Risk-Test.mmdb', '6.1.2.1', '').ip_risk;
+----
+75.0
+
+query I
+SELECT geoip_densityincome('./test-data/test-data/GeoIP2-DensityIncome-Test.mmdb', '5.83.124.0', '').average_income;
+----
+32323
+
+query I
+SELECT geoip_domain('./test-data/test-data/GeoIP2-Domain-Test.mmdb', '1.2.0.0', '').domain;
+----
+maxmind.com
+
+query I
+SELECT geoip_static_ip_score('./test-data/test-data/GeoIP2-Static-IP-Score-Test.mmdb', '1.0.0.0', '').score;
+----
+0.01
+
+query I
+SELECT geoip_user_count('./test-data/test-data/GeoIP2-User-Count-Test.mmdb', '1.2.3.0', '').ipv4_24;
+----
+4
+
+statement error
+SELECT * FROM read_mmdb('./nonexistent.mmdb') LIMIT 1;
+----
+FileNotFound
+
+statement error
+SELECT * FROM read_mmdb('./test-data/test-data/GeoIP2-City-Test.mmdb', network='invalid') LIMIT 1;
+----
+parsing network
+
+statement error
+SELECT geolite_city('./nonexistent.mmdb', '1.0.0.0', '');
+----
+FileNotFound
+
+query I
+SELECT geolite_city('./test-data/test-data/GeoIP2-City-Test.mmdb', 'invalid', '');
+----
+NULL
+
+query I
+SELECT geolite_city(NULL, '1.0.0.0', '');
+----
+NULL
+
+query I
+SELECT geolite_city('./test-data/test-data/GeoIP2-City-Test.mmdb', NULL, '');
+----
+NULL
+
+query I
+SELECT geolite_city('./test-data/test-data/GeoIP2-City-Test.mmdb', '89.160.20.128', NULL);
+----
+NULL
+
+query I
+SELECT geolite_city('./test-data/test-data/GeoIP2-City-Test.mmdb', '192.168.1.1', '');
+----
+NULL
+
+query I
+SELECT city.names.en FROM read_mmdb('./test-data/test-data/GeoIP2-City-Test.mmdb', network=NULL) WHERE city.names.en = 'Boxford' LIMIT 1;
+----
+Boxford
+
+statement error
+SELECT * FROM read_mmdb(NULL) LIMIT 1;
+----
+path must not be NULL
