@@ -138,6 +138,12 @@ SELECT city.names.en FROM read_mmdb('./test-data/test-data/GeoIP2-City-Test.mmdb
 ----
 Boxford
 
+query II
+SELECT path, geoip_city(path, '2.2.3.0', 'city').city.names.en AS city FROM (VALUES ('./test-data/test-data/GeoLite2-City-Test.mmdb'), ('./test-data/test-data/GeoIP2-City-Test.mmdb')) t(path);
+----
+./test-data/test-data/GeoLite2-City-Test.mmdb	NULL
+./test-data/test-data/GeoIP2-City-Test.mmdb	Boxford
+
 statement error
 SELECT * FROM read_mmdb(NULL) LIMIT 1;
 ----

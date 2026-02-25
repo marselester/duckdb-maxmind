@@ -359,11 +359,7 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
                 api.duckdb_vector_get_data.?(fields_vec),
             ));
 
-            // Read path and fields from row 0 (constant across the batch).
-            const path_len = api.duckdb_string_t_length.?(path_data[0]);
-            const path_ptr = api.duckdb_string_t_data.?(&path_data[0]);
-            const path = path_ptr[0..path_len];
-
+            // Fields are read from row 0 (constant across the batch).
             const fields_len = api.duckdb_string_t_length.?(fields_data[0]);
             const fields_str = if (fields_len > 0)
                 api.duckdb_string_t_data.?(&fields_data[0])[0..fields_len]
@@ -388,7 +384,12 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
                 },
             };
 
-            var db = maxminddb.Reader.mmap(allocator, path) catch |err| {
+            // We should re-open the Reader only when the path changes.
+            const first_path_len = api.duckdb_string_t_length.?(path_data[0]);
+            const first_path_ptr = api.duckdb_string_t_data.?(&path_data[0]);
+            var current_path: []const u8 = first_path_ptr[0..first_path_len];
+
+            var db = maxminddb.Reader.mmap(allocator, current_path) catch |err| {
                 api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
                 return;
             };
@@ -400,6 +401,22 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
 
             var i: u64 = 0;
             while (i < input_size) : (i += 1) {
+                const row_path_len = api.duckdb_string_t_length.?(path_data[i]);
+                const row_path_ptr = api.duckdb_string_t_data.?(&path_data[i]);
+                const row_path = row_path_ptr[0..row_path_len];
+
+                if (!std.mem.eql(u8, row_path, current_path)) {
+                    const new_db = maxminddb.Reader.mmap(allocator, row_path) catch |err| {
+                        api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
+                        return;
+                    };
+
+                    db.unmap();
+                    db = new_db;
+
+                    current_path = row_path;
+                }
+
                 const ip_len = api.duckdb_string_t_length.?(ip_data[i]);
                 const ip_ptr = api.duckdb_string_t_data.?(&ip_data[i]);
                 const ip_str = ip_ptr[0..ip_len];
