@@ -30,6 +30,8 @@ jobs:
         run: curl https://install.duckdb.org | sh
       - name: Fetch submodules
         run: git submodule update --init --recursive
+      - name: Test
+        run: zig build test
       - name: Build
         run: zig build -Dtarget=${{ matrix.target }}
       - name: Test geolite_city

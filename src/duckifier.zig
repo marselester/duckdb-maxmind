@@ -1,7 +1,5 @@
 const std = @import("std");
 const c = @import("duckdb");
-const maxminddb = @import("maxminddb");
-
 extern const duckdb_ext_api: c.duckdb_ext_api_v1;
 const api = &duckdb_ext_api;
 
@@ -23,7 +21,7 @@ pub fn createDuckDBType(comptime T: type) c.duckdb_logical_type {
         .optional => |opt| return createDuckDBType(opt.child),
         .@"struct" => {
             // MAP
-            if (@hasDecl(T, "KV")) {
+            if (@hasDecl(T, "map_marker")) {
                 const key_type = api.duckdb_create_logical_type.?(c.DUCKDB_TYPE_VARCHAR);
                 defer api.duckdb_destroy_logical_type.?(@constCast(&key_type));
 
@@ -34,18 +32,19 @@ pub fn createDuckDBType(comptime T: type) c.duckdb_logical_type {
             }
 
             // LIST
-            if (@hasDecl(T, "Slice")) {
-                const elem_type = createDuckDBType(std.meta.Child(T.Slice));
+            if (@hasDecl(T, "array_marker")) {
+                const ChildType = std.meta.Elem(std.meta.fieldInfo(T, .items).type);
+                const elem_type = createDuckDBType(ChildType);
                 defer api.duckdb_destroy_logical_type.?(@constCast(&elem_type));
 
                 return api.duckdb_create_list_type.?(elem_type);
             }
 
             // STRUCT
-            const n = maxminddb.Fields.count(T);
+            const n = std.meta.fields(T).len;
             var member_types: [n]c.duckdb_logical_type = undefined;
             var member_names: [n][*c]const u8 = undefined;
-            inline for (maxminddb.Fields.entries(T), 0..) |f, idx| {
+            inline for (std.meta.fields(T), 0..) |f, idx| {
                 member_types[idx] = createDuckDBType(f.type);
                 member_names[idx] = @ptrCast(f.name.ptr);
             }
@@ -91,19 +90,19 @@ pub fn writeValue(comptime T: type, value: T, vector: c.duckdb_vector, row: u64)
         },
         .@"struct" => {
             // MAP
-            if (@hasDecl(T, "KV")) {
-                writeHashMap(value, vector, row);
+            if (@hasDecl(T, "map_marker")) {
+                writeMap(value, vector, row);
                 return;
             }
 
             // LIST
-            if (@hasDecl(T, "Slice")) {
-                writeArrayList(T, value, vector, row);
+            if (@hasDecl(T, "array_marker")) {
+                writeList(T, value, vector, row);
                 return;
             }
 
             // STRUCT
-            inline for (maxminddb.Fields.entries(T), 0..) |f, idx| {
+            inline for (std.meta.fields(T), 0..) |f, idx| {
                 const child_vec = api.duckdb_struct_vector_get_child.?(vector, idx);
                 writeValue(f.type, @field(value, f.name), child_vec, row);
             }
@@ -130,7 +129,7 @@ pub fn writeNull(comptime T: type, vector: c.duckdb_vector, row: u64) void {
         .optional => |opt| writeNull(opt.child, vector, row),
         .@"struct" => {
             // MAP or LIST: write an empty list entry so the offset/length aren't garbage.
-            if (@hasDecl(T, "KV") or @hasDecl(T, "Slice")) {
+            if (@hasDecl(T, "map_marker") or @hasDecl(T, "array_marker")) {
                 const current_size = api.duckdb_list_vector_get_size.?(vector);
                 const entries: [*]c.duckdb_list_entry = @ptrCast(@alignCast(
                     api.duckdb_vector_get_data.?(vector),
@@ -144,7 +143,7 @@ pub fn writeNull(comptime T: type, vector: c.duckdb_vector, row: u64) void {
             }
 
             // STRUCT: recurse into all children.
-            inline for (maxminddb.Fields.entries(T), 0..) |f, idx| {
+            inline for (std.meta.fields(T), 0..) |f, idx| {
                 const child_vec = api.duckdb_struct_vector_get_child.?(vector, idx);
                 writeNull(f.type, child_vec, row);
             }
@@ -161,7 +160,7 @@ pub fn writeRecordField(
     row: u64,
     field_idx: u64,
 ) void {
-    inline for (maxminddb.Fields.entries(T), 0..) |f, idx| {
+    inline for (std.meta.fields(T), 0..) |f, idx| {
         if (idx == field_idx) {
             writeValue(f.type, @field(record, f.name), vector, row);
             return;
@@ -173,17 +172,15 @@ pub fn writeRecordField(
 
 /// Writes a DuckDB MAP vector.
 /// MAP is stored as LIST(STRUCT(key VARCHAR, value VARCHAR)).
-fn writeHashMap(map: anytype, map_vec: c.duckdb_vector, row: u64) void {
-    const keys = map.keys();
-    const vals = map.values();
-    const count: u64 = keys.len;
+fn writeMap(map: anytype, map_vec: c.duckdb_vector, row: u64) void {
+    const count: u64 = map.entries.len;
     const current_size = api.duckdb_list_vector_get_size.?(map_vec);
     const new_size = current_size + count;
 
     _ = api.duckdb_list_vector_reserve.?(map_vec, new_size);
 
-    const entries: [*]c.duckdb_list_entry = @ptrCast(@alignCast(api.duckdb_vector_get_data.?(map_vec)));
-    entries[row] = .{
+    const list_entries: [*]c.duckdb_list_entry = @ptrCast(@alignCast(api.duckdb_vector_get_data.?(map_vec)));
+    list_entries[row] = .{
         .offset = current_size,
         .length = count,
     };
@@ -192,18 +189,18 @@ fn writeHashMap(map: anytype, map_vec: c.duckdb_vector, row: u64) void {
     const key_vec = api.duckdb_struct_vector_get_child.?(child_struct, 0);
     const val_vec = api.duckdb_struct_vector_get_child.?(child_struct, 1);
 
-    for (keys, vals, 0..) |key, val, j| {
+    for (map.entries, 0..) |e, j| {
         const idx = current_size + @as(u64, @intCast(j));
-        api.duckdb_vector_assign_string_element_len.?(key_vec, idx, key.ptr, key.len);
-        api.duckdb_vector_assign_string_element_len.?(val_vec, idx, val.ptr, val.len);
+        api.duckdb_vector_assign_string_element_len.?(key_vec, idx, e.key.ptr, e.key.len);
+        api.duckdb_vector_assign_string_element_len.?(val_vec, idx, e.value.ptr, e.value.len);
     }
 
     _ = api.duckdb_list_vector_set_size.?(map_vec, new_size);
 }
 
 /// Writes a DuckDB LIST vector.
-fn writeArrayList(comptime T: type, list: T, list_vec: c.duckdb_vector, row: u64) void {
-    const Elem = std.meta.Child(T.Slice);
+fn writeList(comptime T: type, list: T, list_vec: c.duckdb_vector, row: u64) void {
+    const Elem = std.meta.Elem(std.meta.fieldInfo(T, .items).type);
     const current_size = api.duckdb_list_vector_get_size.?(list_vec);
     const count: u64 = list.items.len;
     const new_size = current_size + count;
