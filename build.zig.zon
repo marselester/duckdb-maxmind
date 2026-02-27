@@ -1,6 +1,6 @@
 .{
     .name = .duckdb_maxmind,
-    .version = "0.3.2",
+    .version = "0.4.0",
     .fingerprint = 0x3637936961daa956,
     .dependencies = .{
         .maxminddb = .{
