@@ -2,6 +2,7 @@ const std = @import("std");
 const c = @import("duckdb");
 const maxminddb = @import("maxminddb");
 const duckifier = @import("duckifier.zig");
+const filter = @import("filter.zig");
 
 extern const duckdb_ext_api: c.duckdb_ext_api_v1;
 const api = &duckdb_ext_api;
@@ -120,7 +121,7 @@ fn bindCallback(info: c.duckdb_bind_info) callconv(.c) void {
     switch (db_type) {
         inline else => |dt| {
             const T = dt.recordType();
-            inline for (maxminddb.Fields.entries(T)) |f| {
+            inline for (std.meta.fields(T)) |f| {
                 const col_type = duckifier.createDuckDBType(f.type);
                 defer api.duckdb_destroy_logical_type.?(@constCast(&col_type));
                 api.duckdb_bind_add_result_column.?(info, f.name, col_type);
@@ -153,7 +154,8 @@ fn bindCallback(info: c.duckdb_bind_info) callconv(.c) void {
 // InitData is stored during the init phase and retrieved during the scan phase.
 // It tracks whether all rows have been emitted so the scan knows when to stop.
 fn InitData(comptime T: type) type {
-    const max_cols = maxminddb.Fields.count(T) + 1; // network + record fields
+    const fields = std.meta.fields(T);
+    const max_cols = fields.len + 1; // network + record fields
 
     return struct {
         db: maxminddb.Reader,
@@ -164,6 +166,9 @@ fn InitData(comptime T: type) type {
         // Maps output chunk vector position to original column index.
         projected_cols: [max_cols]c.idx_t,
         num_projected: c.idx_t,
+
+        // Field names for projection pushdown filtering.
+        field_names: filter.Fields(fields.len),
 
         const Self = @This();
 
@@ -201,31 +206,29 @@ fn initCallback(info: c.duckdb_init_info) callconv(.c) void {
             };
 
             // Read projected columns for projection pushdown.
-            // Build Fields so the decoder skips non-projected record fields.
+            // Build field names so the decoder skips non-projected record fields.
             const num_projected = api.duckdb_init_get_column_count.?(info);
             init_data.num_projected = num_projected;
 
-            var fields: maxminddb.Fields = .{};
+            init_data.field_names = .{};
             for (0..num_projected) |out_idx| {
                 const col_idx = api.duckdb_init_get_column_index.?(info, out_idx);
                 init_data.projected_cols[out_idx] = col_idx;
 
                 if (col_idx > 0) {
-                    fields = fields.set(@intCast(col_idx - 1));
+                    inline for (std.meta.fields(T), 0..) |f, idx| {
+                        if (idx == col_idx - 1) {
+                            init_data.field_names.append(f.name);
+                        }
+                    }
                 }
             }
-
-            // Use null when all fields are projected (no filtering needed).
-            const only: ?maxminddb.Fields = if (fields.mask == (maxminddb.Fields.all(T)).mask)
-                null
-            else
-                fields;
 
             init_data.it = init_data.db.within(
                 allocator,
                 T,
                 bind_data.network,
-                .{ .only = only },
+                .{ .only = init_data.field_names.slice() },
             ) catch |err| {
                 api.duckdb_init_set_error.?(info, @errorName(err).ptr);
                 init_data.db.unmap();
@@ -365,24 +368,7 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
                 api.duckdb_string_t_data.?(&fields_data[0])[0..fields_len]
             else
                 "";
-
-            const only: ?maxminddb.Fields = switch (maxminddb.Fields.parse(T, fields_str, ',')) {
-                .fields => |f| if (f.mask == 0 or f.mask == maxminddb.Fields.all(T).mask)
-                    null
-                else
-                    f,
-                .unknown_field => |bad_name| {
-                    var err_buf: [128]u8 = undefined;
-                    const err_msg = std.fmt.bufPrintZ(
-                        &err_buf,
-                        "unknown field '{s}'",
-                        .{bad_name},
-                    ) catch "unknown field";
-
-                    api.duckdb_scalar_function_set_error.?(info, err_msg.ptr);
-                    return;
-                },
-            };
+            const field_names = filter.Fields(std.meta.fields(T).len).parse(fields_str, ',');
 
             // We should re-open the Reader only when the path changes.
             const first_path_len = api.duckdb_string_t_length.?(path_data[0]);
@@ -426,7 +412,7 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
                     continue;
                 };
 
-                const result = db.lookup(arena_allocator, T, ip, .{ .only = only }) catch |err| {
+                const result = db.lookup(arena_allocator, T, ip, .{ .only = field_names.slice() }) catch |err| {
                     api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
                     return;
                 } orelse {
@@ -436,7 +422,7 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
 
                 duckifier.writeValue(T, result.value, output, i);
 
-                _ = arena.reset(std.heap.ArenaAllocator.ResetMode.retain_capacity);
+                _ = arena.reset(.retain_capacity);
             }
         }
     }.callback;

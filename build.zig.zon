@@ -4,13 +4,14 @@
     .fingerprint = 0x3637936961daa956,
     .dependencies = .{
         .maxminddb = .{
-            .url = "git+https://github.com/marselester/maxminddb.zig?ref=master#c5504db6445c66db029147e3ba17434404e29fb1",
-            .hash = "maxminddb-0.2.0-HBInuupsAQDaRnrxsYqN8EzIwYDxvZLIm7sGRqtZGVJQ",
+            .url = "git+https://github.com/marselester/maxminddb.zig?ref=v0.3.0#7377c4baad931d4da2d72bfa74c8b6e023adf92a",
+            .hash = "maxminddb-0.3.0-HBInunt0AQDYMGHcW9R4E4mxheGiFzsnVUBvgu3Agsu5",
         },
     },
     .paths = .{
         "build.zig",
         "build.zig.zon",
         "src",
+        "LICENSE",
     },
 }
