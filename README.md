@@ -4,15 +4,16 @@ This unofficial extension allows DuckDB to read MaxMind databases (so far only G
 
 ## Quick start
 
-Install an unsigned extension from a custom repository for convenience.
+Install the extension from the
+[community repository](https://duckdb.org/community_extensions/extensions/maxmind).
 
 ```sh
-$ duckdb -unsigned
-INSTALL maxmind FROM 'https://marselester.com/duckdb-maxmind';
+$ duckdb
+INSTALL maxmind FROM community;
 LOAD maxmind;
 ```
 
-Query MMDB files using `read_mmdb()` table function or
+Query MMDB files using the `read_mmdb()` table function or
 one of the scalar functions, e.g., `geolite_city()`.
 
 ```sql
@@ -44,10 +45,10 @@ SELECT geolite_city('./GeoLite2-City.mmdb', '1.0.64.0', '').city.names.en AS en;
 
 ## Usage
 
-Install an unsigned extension from a custom repository
-or download it from a [CI run](https://github.com/marselester/duckdb-maxmind/actions).
+An unsigned extension can be installed from a custom repository
+or downloaded from a [CI run](https://github.com/marselester/duckdb-maxmind/actions).
 Note, you can find the download links at
-[Releases](https://github.com/marselester/duckdb-maxmind/releases) page as well.
+the [Releases](https://github.com/marselester/duckdb-maxmind/releases) page as well.
 
 ```sh
 $ duckdb -unsigned
@@ -102,7 +103,7 @@ $ cd ./duckdb-maxmind/
 $ git submodule update --init --recursive
 ```
 
-Make sure the extension works by running DuckDB interactive session.
+Make sure the extension works by running a DuckDB interactive session.
 
 ```sh
 $ brew install duckdb
@@ -114,6 +115,8 @@ Run the lookup benchmark to catch regressions (1M random IPs against GeoLite2-Ci
 ```sh
 $ zig build benchmark_lookup
 ```
+
+Here are reference results on Apple M2 Pro.
 
 <details>
 
@@ -132,27 +135,56 @@ $ for i in $(seq 1 10); do
       2>&1 | grep 'Lookups Per Second'
   done
 
-Lookups Per Second: 435031
-Lookups Per Second: 448831
-Lookups Per Second: 424320
-Lookups Per Second: 450519
-Lookups Per Second: 453749
-Lookups Per Second: 432921
-Lookups Per Second: 456187
-Lookups Per Second: 428405
-Lookups Per Second: 450528
-Lookups Per Second: 424362
+Lookups Per Second: 497955
+Lookups Per Second: 593995
+Lookups Per Second: 590774
+Lookups Per Second: 587747
+Lookups Per Second: 590649
+Lookups Per Second: 574647
+Lookups Per Second: 586559
+Lookups Per Second: 595166
+Lookups Per Second: 513376
+Lookups Per Second: 592375
 ---
-Lookups Per Second: 762510
-Lookups Per Second: 810526
-Lookups Per Second: 796118
-Lookups Per Second: 819167
-Lookups Per Second: 768519
-Lookups Per Second: 812188
-Lookups Per Second: 807066
-Lookups Per Second: 729973
-Lookups Per Second: 824185
-Lookups Per Second: 809390
+Lookups Per Second: 835650
+Lookups Per Second: 826393
+Lookups Per Second: 791974
+Lookups Per Second: 799695
+Lookups Per Second: 837284
+Lookups Per Second: 819740
+Lookups Per Second: 816168
+Lookups Per Second: 759350
+Lookups Per Second: 834254
+Lookups Per Second: 832943
+```
+
+</details>
+
+<details>
+
+<summary>SELECT * FROM read_mmdb('GeoLite2-City.mmdb')</summary>
+
+```sql
+D SELECT * FROM read_mmdb('GeoLite2-City.mmdb');
+100% ▕██████████████████████████████████████▏ (00:00:09.63 elapsed)
+```
+
+</details>
+
+<details>
+
+<summary>SELECT count(*) FROM read_mmdb('GeoLite2-City.mmdb')</summary>
+
+```sql
+D SELECT count(*) FROM read_mmdb('GeoLite2-City.mmdb');
+100% ▕██████████████████████████████████████▏ (00:00:02.39 elapsed)
+┌────────────────┐
+│  count_star()  │
+│     int64      │
+├────────────────┤
+│    5502351     │
+│ (5.50 million) │
+└────────────────┘
 ```
 
 </details>
