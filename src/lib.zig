@@ -306,9 +306,6 @@ pub export fn register_lookup_functions(conn: c.duckdb_connection) callconv(.c) 
     defer api.duckdb_destroy_logical_type.?(@constCast(&varchar_type));
 
     // Register one function per database type, e.g., geolite_city(path, ip, fields).
-    //
-    // Once duckdb_scalar_function_set_bind() is available in C extensions API,
-    // we should be able to consolidate them into a single function lookup_mmdb().
     inline for (std.meta.fields(maxminddb.DatabaseType)) |field| {
         const dt: maxminddb.DatabaseType = @enumFromInt(field.value);
         const T = dt.recordType();
@@ -330,6 +327,25 @@ pub export fn register_lookup_functions(conn: c.duckdb_connection) callconv(.c) 
         if (api.duckdb_register_scalar_function.?(conn, f) == c.DuckDBError) {
             return c.DuckDBError;
         }
+    }
+
+    // Register mmdb_record(path, ip, fields) to lookup in any MMDB file.
+    // It returns VARCHAR containing JSON since any.Value is recursive
+    // and can't be mapped to a fixed DuckDB type.
+    const f = api.duckdb_create_scalar_function.?();
+    defer api.duckdb_destroy_scalar_function.?(@constCast(&f));
+
+    api.duckdb_scalar_function_set_name.?(f, "mmdb_record");
+    api.duckdb_scalar_function_add_parameter.?(f, varchar_type); // path
+    api.duckdb_scalar_function_add_parameter.?(f, varchar_type); // ip
+    api.duckdb_scalar_function_add_parameter.?(f, varchar_type); // fields
+
+    api.duckdb_scalar_function_set_return_type.?(f, varchar_type);
+
+    api.duckdb_scalar_function_set_function.?(f, lookupAnyCallback);
+
+    if (api.duckdb_register_scalar_function.?(conn, f) == c.DuckDBError) {
+        return c.DuckDBError;
     }
 
     return c.DuckDBSuccess;
@@ -426,4 +442,120 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
             }
         }
     }.callback;
+}
+
+// Real MMDB databases have at most ~15 top-level fields.
+const max_mmdb_fields = 32;
+// 4KB should be enough to decode most of database records.
+const json_buf_size = 4096;
+
+// Scalar function callback for mmdb_record(path, ip, fields).
+// Decodes any MMDB record as any.Value and returns JSON as VARCHAR.
+fn lookupAnyCallback(
+    info: c.duckdb_function_info,
+    input: c.duckdb_data_chunk,
+    output: c.duckdb_vector,
+) callconv(.c) void {
+    const input_size = api.duckdb_data_chunk_get_size.?(input);
+    if (input_size == 0) {
+        return;
+    }
+
+    const path_vec = api.duckdb_data_chunk_get_vector.?(input, 0);
+    const ip_vec = api.duckdb_data_chunk_get_vector.?(input, 1);
+    const fields_vec = api.duckdb_data_chunk_get_vector.?(input, 2);
+
+    const path_data: [*]c.duckdb_string_t = @ptrCast(@alignCast(
+        api.duckdb_vector_get_data.?(path_vec),
+    ));
+    const ip_data: [*]c.duckdb_string_t = @ptrCast(@alignCast(
+        api.duckdb_vector_get_data.?(ip_vec),
+    ));
+    const fields_data: [*]c.duckdb_string_t = @ptrCast(@alignCast(
+        api.duckdb_vector_get_data.?(fields_vec),
+    ));
+
+    // Fields are read from row 0 (constant across the batch).
+    const fields_len = api.duckdb_string_t_length.?(fields_data[0]);
+    const fields_str = if (fields_len > 0)
+        api.duckdb_string_t_data.?(&fields_data[0])[0..fields_len]
+    else
+        "";
+    const field_names = filter.Fields(max_mmdb_fields).parse(fields_str, ',');
+
+    // We should re-open the Reader only when the path changes.
+    const first_path_len = api.duckdb_string_t_length.?(path_data[0]);
+    const first_path_ptr = api.duckdb_string_t_data.?(&path_data[0]);
+    var current_path: []const u8 = first_path_ptr[0..first_path_len];
+
+    var db = maxminddb.Reader.mmap(allocator, current_path) catch |err| {
+        api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
+        return;
+    };
+    defer db.unmap();
+
+    var buf: [json_buf_size]u8 = undefined;
+    var w = std.io.Writer.fixed(&buf);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    var i: u64 = 0;
+    while (i < input_size) : (i += 1) {
+        const row_path_len = api.duckdb_string_t_length.?(path_data[i]);
+        const row_path_ptr = api.duckdb_string_t_data.?(&path_data[i]);
+        const row_path = row_path_ptr[0..row_path_len];
+
+        if (!std.mem.eql(u8, row_path, current_path)) {
+            const new_db = maxminddb.Reader.mmap(allocator, row_path) catch |err| {
+                api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
+                return;
+            };
+
+            db.unmap();
+            db = new_db;
+
+            current_path = row_path;
+        }
+
+        const ip_len = api.duckdb_string_t_length.?(ip_data[i]);
+        const ip_ptr = api.duckdb_string_t_data.?(&ip_data[i]);
+        const ip_str = ip_ptr[0..ip_len];
+
+        const ip = std.net.Address.parseIp(ip_str, 0) catch {
+            duckifier.writeNull([]const u8, output, i);
+            continue;
+        };
+
+        const result = db.lookup(
+            arena_allocator,
+            maxminddb.any.Value,
+            ip,
+            .{ .only = field_names.slice() },
+        ) catch |err| {
+            api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
+            return;
+        } orelse {
+            duckifier.writeNull([]const u8, output, i);
+            continue;
+        };
+
+        // Format the record as JSON into a buffer, falling back to heap allocation
+        // via the arena for records that exceed the buffer size.
+        w.end = 0;
+        if (result.value.format(&w)) {
+            api.duckdb_vector_assign_string_element_len.?(output, i, w.buffer.ptr, w.end);
+        } else |_| {
+            var list: std.ArrayListUnmanaged(u8) = .{};
+            result.value.format(list.writer(arena_allocator)) catch |err| {
+                api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
+                return;
+            };
+
+            api.duckdb_vector_assign_string_element_len.?(output, i, list.items.ptr, list.items.len);
+        }
+
+        _ = arena.reset(.retain_capacity);
+    }
 }
