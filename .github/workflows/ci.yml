@@ -34,6 +34,8 @@ jobs:
         run: zig build test
       - name: Build
         run: zig build -Dtarget=${{ matrix.target }}
+      - name: Test mmdb_record
+        run: ~/.duckdb/cli/latest/duckdb -unsigned -c "LOAD 'zig-out/lib/maxmind.duckdb_extension'; SELECT mmdb_record('./test-data/test-data/GeoIP2-City-Test.mmdb', '89.160.20.128', '');" | grep -q "Linköping"
       - name: Test geolite_city
         run: ~/.duckdb/cli/latest/duckdb -unsigned -c "LOAD 'zig-out/lib/maxmind.duckdb_extension'; SELECT geolite_city('./test-data/test-data/GeoIP2-City-Test.mmdb', '89.160.20.128', '');" | grep -q "Linköping"
       - name: Test read_mmdb
