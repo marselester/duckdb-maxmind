@@ -1,6 +1,6 @@
 # DuckDB MaxMind Extension
 
-This unofficial extension allows DuckDB to read MaxMind databases (so far only GeoLite/GeoIP).
+This unofficial extension allows DuckDB to read MaxMind databases.
 
 ## Quick start
 
@@ -14,7 +14,7 @@ LOAD maxmind;
 ```
 
 Query MMDB files using the `read_mmdb()` table function or
-one of the scalar functions, e.g., `geolite_city()`.
+one of the scalar functions, e.g., `geolite_city()` or `mmdb_record()`.
 
 ```sql
 -- Try ".mode line" if you want an untruncated output.
@@ -35,7 +35,19 @@ LIMIT 1;
 
 -- Look up a record by an IP address.
 -- Pass an empty string as the third parameter to decode all fields.
-SELECT geolite_city('./GeoLite2-City.mmdb', '1.0.64.0', '').city.names.en AS en;
+SELECT geolite_city(
+  './GeoLite2-City.mmdb', '1.0.64.0', ''
+).city.names.en AS en;
+┌───────────┐
+│    en     │
+├───────────┤
+│ Hiroshima │
+└───────────┘
+
+-- Look up a record from any MMDB file.
+SELECT mmdb_record(
+  './GeoLite2-City.mmdb', '1.0.64.0', 'city'
+)::json -> 'city' -> 'names' ->> 'en' AS en;
 ┌───────────┐
 │    en     │
 ├───────────┤
@@ -71,9 +83,12 @@ Record fields are flattened into top-level columns such as city, country, locati
 Use the optional `network` parameter to limit the scan,
 for example, `read_mmdb(path, network='1.0.0.0/8')`.
 
-Scalar functions take three parameters: `path`, `ip`, and `fields`.
+Scalar function `mmdb_record(path, ip, fields)` works with any MMDB file
+and returns the record as JSON string.
 The `fields` parameter is a comma-separated list of record fields to decode.
 Pass an empty string to decode all fields.
+
+For known GeoLite/GeoIP databases, typed scalar functions return structs:
 
 - `geolite_city(path, ip, fields)`
 - `geolite_country(path, ip, fields)`
@@ -107,55 +122,98 @@ Make sure the extension works by running a DuckDB interactive session.
 
 ```sh
 $ brew install duckdb
-$ zig build duckdb
+$ zig build duckdb -Doptimize=ReleaseFast
+D SELECT mmdb_record('./GeoLite2-City.mmdb', '1.0.64.0', '');
 ```
 
 Run the lookup benchmark to catch regressions (1M random IPs against GeoLite2-City).
 
 ```sh
-$ zig build benchmark_lookup
+$ zig build benchmark_lookup -Doptimize=ReleaseFast
 ```
 
-Here are reference results on Apple M2 Pro.
+Here are reference results on Apple M2 Pro (DuckDB calls functions from different threads).
 
 <details>
 
-<summary>All fields vs filtered</summary>
+<summary>All fields vs filtered (struct)</summary>
 
 ```sh
 $ for i in $(seq 1 10); do
-    zig build benchmark_lookup -- GeoLite2-City.mmdb 1000000 \
+    zig build benchmark_lookup -Doptimize=ReleaseFast -- GeoLite2-City.mmdb 1000000 \
       2>&1 | grep 'Lookups Per Second'
   done
 
   echo '---'
 
   for i in $(seq 1 10); do
-    zig build benchmark_lookup -- GeoLite2-City.mmdb 1000000 city \
+    zig build benchmark_lookup -Doptimize=ReleaseFast -- GeoLite2-City.mmdb 1000000 city \
       2>&1 | grep 'Lookups Per Second'
   done
 
-Lookups Per Second: 497955
-Lookups Per Second: 593995
-Lookups Per Second: 590774
-Lookups Per Second: 587747
-Lookups Per Second: 590649
-Lookups Per Second: 574647
-Lookups Per Second: 586559
-Lookups Per Second: 595166
-Lookups Per Second: 513376
-Lookups Per Second: 592375
+Lookups Per Second: 1181048
+Lookups Per Second: 1375543
+Lookups Per Second: 1369311
+Lookups Per Second: 1369761
+Lookups Per Second: 1324712
+Lookups Per Second: 1338950
+Lookups Per Second: 1365158
+Lookups Per Second: 1361891
+Lookups Per Second: 1341626
+Lookups Per Second: 1346066
 ---
-Lookups Per Second: 835650
-Lookups Per Second: 826393
-Lookups Per Second: 791974
-Lookups Per Second: 799695
-Lookups Per Second: 837284
-Lookups Per Second: 819740
-Lookups Per Second: 816168
-Lookups Per Second: 759350
-Lookups Per Second: 834254
-Lookups Per Second: 832943
+Lookups Per Second: 1645663
+Lookups Per Second: 1615902
+Lookups Per Second: 1644466
+Lookups Per Second: 1524310
+Lookups Per Second: 1629483
+Lookups Per Second: 1640131
+Lookups Per Second: 1566966
+Lookups Per Second: 1628056
+Lookups Per Second: 1636196
+Lookups Per Second: 1386362
+```
+
+</details>
+
+<details>
+
+<summary>All fields vs filtered (JSON)</summary>
+
+```sh
+$ for i in $(seq 1 10); do
+    zig build benchmark_lookup_json -Doptimize=ReleaseFast -- GeoLite2-City.mmdb 1000000 \
+      2>&1 | grep 'Lookups Per Second'
+  done
+
+  echo '---'
+
+  for i in $(seq 1 10); do
+    zig build benchmark_lookup_json -Doptimize=ReleaseFast -- GeoLite2-City.mmdb 1000000 city \
+      2>&1 | grep 'Lookups Per Second'
+  done
+
+Lookups Per Second: 1474290
+Lookups Per Second: 1430456
+Lookups Per Second: 1495560
+Lookups Per Second: 1477165
+Lookups Per Second: 1201247
+Lookups Per Second: 1470980
+Lookups Per Second: 1493345
+Lookups Per Second: 1473481
+Lookups Per Second: 1491169
+Lookups Per Second: 1499607
+---
+Lookups Per Second: 1723675
+Lookups Per Second: 1753231
+Lookups Per Second: 1674606
+Lookups Per Second: 1738747
+Lookups Per Second: 1751980
+Lookups Per Second: 1729041
+Lookups Per Second: 1741489
+Lookups Per Second: 1699169
+Lookups Per Second: 1706883
+Lookups Per Second: 1540820
 ```
 
 </details>

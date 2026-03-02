@@ -92,28 +92,36 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run_tests.step);
     }
 
-    const benchmark_step = b.step("benchmark_lookup", "Run lookup benchmark");
-    {
+    const benchmarks = [_]struct {
+        file: []const u8,
+        name: []const u8,
+    }{
+        .{ .file = "benchmarks/lookup.zig", .name = "benchmark_lookup" },
+        .{ .file = "benchmarks/lookup_json.zig", .name = "benchmark_lookup_json" },
+    };
+
+    for (benchmarks) |bench| {
         const bench_module = b.createModule(.{
             .target = target,
             .optimize = .ReleaseFast,
-            .root_source_file = b.path("benchmarks/lookup.zig"),
+            .root_source_file = b.path(bench.file),
             .link_libc = true,
         });
         bench_module.linkSystemLibrary("duckdb", .{});
 
-        const bench = b.addExecutable(.{
-            .name = "benchmark",
+        const exe = b.addExecutable(.{
+            .name = bench.name,
             .root_module = bench_module,
         });
 
-        const run_bench = b.addRunArtifact(bench);
+        const run_bench = b.addRunArtifact(exe);
         run_bench.step.dependOn(b.getInstallStep());
         if (b.args) |args| {
             run_bench.addArgs(args);
         }
 
-        benchmark_step.dependOn(&run_bench.step);
+        const bench_step = b.step(bench.name, bench.file);
+        bench_step.dependOn(&run_bench.step);
     }
 
     const duckdb_step = b.step("duckdb", "Start interactive DuckDB session");

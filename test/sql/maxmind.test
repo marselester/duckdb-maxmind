@@ -3,6 +3,8 @@
 
 require maxmind
 
+# read_mmdb table function.
+
 query I
 SELECT city.names.en FROM read_mmdb('./test-data/test-data/GeoIP2-City-Test.mmdb') WHERE city.names.en = 'Boxford' LIMIT 1;
 ----
@@ -14,14 +16,51 @@ SELECT city.names.en FROM read_mmdb('./test-data/test-data/GeoIP2-City-Test.mmdb
 Linköping
 
 query I
+SELECT city.names.en FROM read_mmdb('./test-data/test-data/GeoIP2-City-Test.mmdb', network=NULL) WHERE city.names.en = 'Boxford' LIMIT 1;
+----
+Boxford
+
+query I
+SELECT country.names.en FROM read_mmdb('./test-data/test-data/GeoIP2-City-Test.mmdb', network='2001:218::/24') LIMIT 1;
+----
+Japan
+
+statement error
+SELECT * FROM read_mmdb('./nonexistent.mmdb') LIMIT 1;
+----
+FileNotFound
+
+statement error
+SELECT * FROM read_mmdb('./test-data/test-data/GeoIP2-City-Test.mmdb', network='invalid') LIMIT 1;
+----
+parsing network
+
+statement error
+SELECT * FROM read_mmdb(NULL) LIMIT 1;
+----
+path must not be NULL
+
+# Typed scalar functions (one per database type).
+
+query I
 SELECT geolite_city('./test-data/test-data/GeoIP2-City-Test.mmdb', '89.160.20.128', '').city.names.en;
 ----
 Linköping
 
 query I
+SELECT geolite_city('./test-data/test-data/GeoIP2-City-Test.mmdb', '2001:218::', '').country.names.en;
+----
+Japan
+
+query I
 SELECT geolite_city('./test-data/test-data/GeoIP2-City-Test.mmdb', '89.160.20.128', 'city').city.names.en;
 ----
 Linköping
+
+query I
+SELECT geolite_city('./test-data/test-data/GeoIP2-City-Test.mmdb', '89.160.20.128', 'city,country');
+----
+{'city': {'geoname_id': 2694762, 'names': {de=Linköping, en=Linköping, fr=Linköping, ja=リンシェーピング, zh-CN=林雪平}}, 'continent': {'code': '', 'geoname_id': 0, 'names': NULL}, 'country': {'geoname_id': 2661886, 'is_in_european_union': true, 'iso_code': SE, 'names': {de=Schweden, en=Sweden, es=Suecia, fr=Suède, ja=スウェーデン王国, pt-BR=Suécia, ru=Швеция, zh-CN=瑞典}}, 'location': {'accuracy_radius': 0, 'latitude': 0.0, 'longitude': 0.0, 'metro_code': 0, 'time_zone': ''}, 'postal': {'code': ''}, 'registered_country': {'geoname_id': 0, 'is_in_european_union': false, 'iso_code': '', 'names': NULL}, 'represented_country': {'geoname_id': 0, 'is_in_european_union': false, 'iso_code': '', 'names': NULL, 'type': ''}, 'subdivisions': NULL}
 
 query I
 SELECT geolite_country('./test-data/test-data/GeoLite2-Country-Test.mmdb', '2.125.160.216', '').country.names.en;
@@ -93,15 +132,15 @@ SELECT geoip_user_count('./test-data/test-data/GeoIP2-User-Count-Test.mmdb', '1.
 ----
 4
 
-statement error
-SELECT * FROM read_mmdb('./nonexistent.mmdb') LIMIT 1;
-----
-FileNotFound
+# Typed scalar: path change within a batch.
 
-statement error
-SELECT * FROM read_mmdb('./test-data/test-data/GeoIP2-City-Test.mmdb', network='invalid') LIMIT 1;
+query II
+SELECT path, geoip_city(path, '2.2.3.0', 'city').city.names.en AS city FROM (VALUES ('./test-data/test-data/GeoLite2-City-Test.mmdb'), ('./test-data/test-data/GeoIP2-City-Test.mmdb')) t(path);
 ----
-parsing network
+./test-data/test-data/GeoLite2-City-Test.mmdb	NULL
+./test-data/test-data/GeoIP2-City-Test.mmdb	Boxford
+
+# Typed scalar: edge cases.
 
 statement error
 SELECT geolite_city('./nonexistent.mmdb', '1.0.0.0', '');
@@ -133,18 +172,74 @@ SELECT geolite_city('./test-data/test-data/GeoIP2-City-Test.mmdb', '192.168.1.1'
 ----
 NULL
 
+# mmdb_record scalar function.
+
 query I
-SELECT city.names.en FROM read_mmdb('./test-data/test-data/GeoIP2-City-Test.mmdb', network=NULL) WHERE city.names.en = 'Boxford' LIMIT 1;
+SELECT mmdb_record('./test-data/test-data/GeoIP2-City-Test.mmdb', '89.160.20.128', '');
 ----
-Boxford
+{"city":{"geoname_id":2694762,"names":{"de":"Linköping","en":"Linköping","fr":"Linköping","ja":"リンシェーピング","zh-CN":"林雪平"}},"continent":{"code":"EU","geoname_id":6255148,"names":{"de":"Europa","en":"Europe","es":"Europa","fr":"Europe","ja":"ヨーロッパ","pt-BR":"Europa","ru":"Европа","zh-CN":"欧洲"}},"country":{"geoname_id":2661886,"is_in_european_union":true,"iso_code":"SE","names":{"de":"Schweden","en":"Sweden","es":"Suecia","fr":"Suède","ja":"スウェーデン王国","pt-BR":"Suécia","ru":"Швеция","zh-CN":"瑞典"}},"location":{"accuracy_radius":76,"latitude":58.4167,"longitude":15.6167,"time_zone":"Europe/Stockholm"},"registered_country":{"geoname_id":2921044,"is_in_european_union":true,"iso_code":"DE","names":{"de":"Deutschland","en":"Germany","es":"Alemania","fr":"Allemagne","ja":"ドイツ連邦共和国","pt-BR":"Alemanha","ru":"Германия","zh-CN":"德国"}},"subdivisions":[{"geoname_id":2685867,"iso_code":"E","names":{"en":"Östergötland County","fr":"Comté d'Östergötland"}}]}
+
+query I
+SELECT mmdb_record('./test-data/test-data/GeoIP2-City-Test.mmdb', '89.160.20.128', 'city');
+----
+{"city":{"geoname_id":2694762,"names":{"de":"Linköping","en":"Linköping","fr":"Linköping","ja":"リンシェーピング","zh-CN":"林雪平"}}}
+
+query I
+SELECT mmdb_record('./test-data/test-data/GeoIP2-City-Test.mmdb', '89.160.20.128', 'city,country');
+----
+{"city":{"geoname_id":2694762,"names":{"de":"Linköping","en":"Linköping","fr":"Linköping","ja":"リンシェーピング","zh-CN":"林雪平"}},"country":{"geoname_id":2661886,"is_in_european_union":true,"iso_code":"SE","names":{"de":"Schweden","en":"Sweden","es":"Suecia","fr":"Suède","ja":"スウェーデン王国","pt-BR":"Suécia","ru":"Швеция","zh-CN":"瑞典"}}}
+
+query I
+SELECT mmdb_record('./test-data/test-data/GeoIP2-City-Test.mmdb', '2001:218::', 'country');
+----
+{"country":{"geoname_id":1861060,"iso_code":"JP","names":{"de":"Japan","en":"Japan","es":"Japón","fr":"Japon","ja":"日本","pt-BR":"Japão","ru":"Япония","zh-CN":"日本"}}}
+
+query I
+SELECT mmdb_record('./test-data/test-data/GeoLite2-ASN-Test.mmdb', '1.0.0.0', '');
+----
+{"autonomous_system_number":15169,"autonomous_system_organization":"Google Inc."}
+
+query I
+SELECT mmdb_record('./test-data/test-data/GeoIP2-City-Test.mmdb', '89.160.20.128', 'nonexistent');
+----
+{}
+
+# mmdb_record: path change within a batch.
 
 query II
-SELECT path, geoip_city(path, '2.2.3.0', 'city').city.names.en AS city FROM (VALUES ('./test-data/test-data/GeoLite2-City-Test.mmdb'), ('./test-data/test-data/GeoIP2-City-Test.mmdb')) t(path);
+SELECT path, mmdb_record(path, '2.2.3.0', 'city') AS rec FROM (VALUES ('./test-data/test-data/GeoLite2-City-Test.mmdb'), ('./test-data/test-data/GeoIP2-City-Test.mmdb')) t(path);
 ----
 ./test-data/test-data/GeoLite2-City-Test.mmdb	NULL
-./test-data/test-data/GeoIP2-City-Test.mmdb	Boxford
+./test-data/test-data/GeoIP2-City-Test.mmdb	{"city":{"geoname_id":2655045,"names":{"en":"Boxford"}}}
+
+# mmdb_record: edge cases.
+
+query I
+SELECT mmdb_record('./test-data/test-data/GeoLite2-City-Test.mmdb', '0.0.0.0', '');
+----
+NULL
 
 statement error
-SELECT * FROM read_mmdb(NULL) LIMIT 1;
+SELECT mmdb_record('./nonexistent.mmdb', '1.0.0.0', '');
 ----
-path must not be NULL
+FileNotFound
+
+query I
+SELECT mmdb_record('./test-data/test-data/GeoIP2-City-Test.mmdb', 'invalid', '');
+----
+NULL
+
+query I
+SELECT mmdb_record(NULL, '1.0.0.0', '');
+----
+NULL
+
+query I
+SELECT mmdb_record('./test-data/test-data/GeoIP2-City-Test.mmdb', NULL, '');
+----
+NULL
+
+query I
+SELECT mmdb_record('./test-data/test-data/GeoIP2-City-Test.mmdb', '89.160.20.128', NULL);
+----
+NULL
