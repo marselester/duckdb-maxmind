@@ -79,7 +79,9 @@ LOAD './zig-out/lib/maxmind.duckdb_extension';
 ```
 
 Table function `read_mmdb(path)` scans all IP network blocks in the database.
-Record fields are flattened into top-level columns such as city, country, location.
+For known GeoLite/GeoIP databases, record fields are flattened into top-level columns
+such as city, country, location.
+For unknown database types, records are returned as JSON in a `record` VARCHAR column.
 Use the optional `network` parameter to limit the scan,
 for example, `read_mmdb(path, network='1.0.0.0/8')`.
 
@@ -88,7 +90,8 @@ and returns the record as JSON string.
 The `fields` parameter is a comma-separated list of record fields to decode.
 Pass an empty string to decode all fields.
 
-For known GeoLite/GeoIP databases, typed scalar functions return structs:
+For known GeoLite/GeoIP databases, typed scalar functions return structs
+with a `network` field containing the matched IP network in CIDR notation:
 
 - `geolite_city(path, ip, fields)`
 - `geolite_country(path, ip, fields)`
