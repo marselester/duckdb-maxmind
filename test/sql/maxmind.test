@@ -60,7 +60,7 @@ Linköping
 query I
 SELECT geolite_city('./test-data/test-data/GeoIP2-City-Test.mmdb', '89.160.20.128', 'city,country');
 ----
-{'city': {'geoname_id': 2694762, 'names': {de=Linköping, en=Linköping, fr=Linköping, ja=リンシェーピング, zh-CN=林雪平}}, 'continent': {'code': '', 'geoname_id': 0, 'names': NULL}, 'country': {'geoname_id': 2661886, 'is_in_european_union': true, 'iso_code': SE, 'names': {de=Schweden, en=Sweden, es=Suecia, fr=Suède, ja=スウェーデン王国, pt-BR=Suécia, ru=Швеция, zh-CN=瑞典}}, 'location': {'accuracy_radius': 0, 'latitude': 0.0, 'longitude': 0.0, 'metro_code': 0, 'time_zone': ''}, 'postal': {'code': ''}, 'registered_country': {'geoname_id': 0, 'is_in_european_union': false, 'iso_code': '', 'names': NULL}, 'represented_country': {'geoname_id': 0, 'is_in_european_union': false, 'iso_code': '', 'names': NULL, 'type': ''}, 'subdivisions': NULL}
+{'network': 89.160.20.128/25, 'city': {'geoname_id': 2694762, 'names': {de=Linköping, en=Linköping, fr=Linköping, ja=リンシェーピング, zh-CN=林雪平}}, 'continent': {'code': '', 'geoname_id': 0, 'names': NULL}, 'country': {'geoname_id': 2661886, 'is_in_european_union': true, 'iso_code': SE, 'names': {de=Schweden, en=Sweden, es=Suecia, fr=Suède, ja=スウェーデン王国, pt-BR=Suécia, ru=Швеция, zh-CN=瑞典}}, 'location': {'accuracy_radius': 0, 'latitude': 0.0, 'longitude': 0.0, 'metro_code': 0, 'time_zone': ''}, 'postal': {'code': ''}, 'registered_country': {'geoname_id': 0, 'is_in_european_union': false, 'iso_code': '', 'names': NULL}, 'represented_country': {'geoname_id': 0, 'is_in_european_union': false, 'iso_code': '', 'names': NULL, 'type': ''}, 'subdivisions': NULL}
 
 query I
 SELECT geolite_country('./test-data/test-data/GeoLite2-Country-Test.mmdb', '2.125.160.216', '').country.names.en;
