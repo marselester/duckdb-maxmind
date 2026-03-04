@@ -53,6 +53,21 @@ SELECT geolite_city('./test-data/test-data/GeoIP2-City-Test.mmdb', '2001:218::',
 Japan
 
 query I
+SELECT geolite_city('./test-data/test-data/GeoIP2-City-Test.mmdb', '89.160.20.128', '').network;
+----
+89.160.20.128/25
+
+query I
+SELECT geolite_city('./test-data/test-data/GeoIP2-City-Test.mmdb', '2001:218::', '').network;
+----
+2001:0218:0000:0000:0000:0000:0000:0000/32
+
+query I
+SELECT geolite_city('./test-data/test-data/GeoIP2-City-Test.mmdb', '89.160.20.128', 'city').network;
+----
+89.160.20.128/25
+
+query I
 SELECT geolite_city('./test-data/test-data/GeoIP2-City-Test.mmdb', '89.160.20.128', 'city').city.names.en;
 ----
 Linköping
