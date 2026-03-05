@@ -3,6 +3,15 @@ const c = @import("duckdb");
 extern const duckdb_ext_api: c.duckdb_ext_api_v1;
 const api = &duckdb_ext_api;
 
+/// Reads a duckdb_string_t as a Zig slice.
+/// Avoids duckdb_string_t_length which takes the 16-byte struct by value
+/// and crashes on Windows x64 due to a Zig callconv(.c) issue
+/// https://github.com/ziglang/zig/issues/25452.
+pub fn readString(s: *c.duckdb_string_t) []const u8 {
+    const len: usize = @intCast(s.value.pointer.length);
+    return api.duckdb_string_t_data.?(s)[0..len];
+}
+
 /// Creates a DuckDB logical type that mirrors a Zig type.
 pub fn createDuckDBType(comptime T: type) c.duckdb_logical_type {
     switch (T) {

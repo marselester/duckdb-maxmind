@@ -68,7 +68,7 @@ INSTALL maxmind FROM 'https://marselester.com/duckdb-maxmind';
 LOAD maxmind;
 ```
 
-The extension should work on `macos` and `linux` running on `aarch64` (ARM64) or `x86_64`.
+The extension should work on `macos`, `linux`, and `windows` running on `aarch64` (ARM64) or `x86_64`.
 Here is how you can build the extension for ARM64 Linux glibc
 (use `musl` if you use Alpine Linux, e.g., `aarch64-linux-musl`).
 
