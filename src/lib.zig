@@ -301,6 +301,33 @@ fn scanCallback(info: c.duckdb_function_info, output: c.duckdb_data_chunk) callc
     }
 }
 
+// Creates a flat struct type that prepends a network field to db record fields.
+fn LookupResult(comptime T: type) type {
+    const record_fields = std.meta.fields(T);
+    var fields: [record_fields.len + 1]std.builtin.Type.StructField = undefined;
+
+    fields[0] = .{
+        .name = "network",
+        .type = []const u8,
+        .default_value_ptr = null,
+        .is_comptime = false,
+        .alignment = @alignOf([]const u8),
+    };
+
+    for (record_fields, 0..) |f, i| {
+        fields[i + 1] = f;
+    }
+
+    return @Type(.{
+        .@"struct" = .{
+            .layout = .auto,
+            .fields = &fields,
+            .decls = &.{},
+            .is_tuple = false,
+        },
+    });
+}
+
 pub export fn register_lookup_functions(conn: c.duckdb_connection) callconv(.c) c.duckdb_state {
     const varchar_type = api.duckdb_create_logical_type.?(c.DUCKDB_TYPE_VARCHAR);
     defer api.duckdb_destroy_logical_type.?(@constCast(&varchar_type));
@@ -318,7 +345,7 @@ pub export fn register_lookup_functions(conn: c.duckdb_connection) callconv(.c) 
         api.duckdb_scalar_function_add_parameter.?(f, varchar_type); // ip
         api.duckdb_scalar_function_add_parameter.?(f, varchar_type); // fields
 
-        const return_type = duckifier.createDuckDBType(T);
+        const return_type = duckifier.createDuckDBType(LookupResult(T));
         defer api.duckdb_destroy_logical_type.?(@constCast(&return_type));
         api.duckdb_scalar_function_set_return_type.?(f, return_type);
 
@@ -354,6 +381,8 @@ pub export fn register_lookup_functions(conn: c.duckdb_connection) callconv(.c) 
 // Returns a scalar function callback for a specific record type.
 fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
     return struct {
+        const R = LookupResult(T);
+
         fn callback(
             info: c.duckdb_function_info,
             input: c.duckdb_data_chunk,
@@ -402,6 +431,7 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
             const arena_allocator = arena.allocator();
 
             var i: u64 = 0;
+            var buf: [64]u8 = undefined;
             while (i < input_size) : (i += 1) {
                 const row_path_len = api.duckdb_string_t_length.?(path_data[i]);
                 const row_path_ptr = api.duckdb_string_t_data.?(&path_data[i]);
@@ -424,7 +454,7 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
                 const ip_str = ip_ptr[0..ip_len];
 
                 const ip = std.net.Address.parseIp(ip_str, 0) catch {
-                    duckifier.writeNull(T, output, i);
+                    duckifier.writeNull(R, output, i);
                     continue;
                 };
 
@@ -432,11 +462,21 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
                     api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
                     return;
                 } orelse {
-                    duckifier.writeNull(T, output, i);
+                    duckifier.writeNull(R, output, i);
                     continue;
                 };
 
-                duckifier.writeValue(T, result.value, output, i);
+                const net_str = std.fmt.bufPrint(&buf, "{f}", .{result.network}) catch |err| {
+                    api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
+                    return;
+                };
+
+                var r: R = undefined;
+                r.network = net_str;
+                inline for (std.meta.fields(T)) |f| {
+                    @field(r, f.name) = @field(result.value, f.name);
+                }
+                duckifier.writeValue(R, r, output, i);
 
                 _ = arena.reset(.retain_capacity);
             }
