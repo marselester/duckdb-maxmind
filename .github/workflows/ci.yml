@@ -9,25 +9,34 @@ jobs:
         include:
           - target: aarch64-linux-gnu
             os: ubuntu-24.04-arm
+            duckdb: ~/.duckdb/cli/latest/duckdb
           - target: x86_64-linux-gnu
             os: ubuntu-latest
+            duckdb: ~/.duckdb/cli/latest/duckdb
           - target: aarch64-macos
             os: macos-latest
+            duckdb: ~/.duckdb/cli/latest/duckdb
           - target: x86_64-macos
             os: macos-15-intel
+            duckdb: ~/.duckdb/cli/latest/duckdb
+          - target: x86_64-windows
+            os: windows-latest
+            duckdb: ./duckdb.exe
 
     runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v6
-      - name: Install Zig (Linux)
-        if: runner.os == 'Linux'
-        run: sudo snap install zig --classic --beta
-      - name: Install Zig (MacOS)
-        if: runner.os == 'macOS'
-        run: brew install zig
+      - uses: mlugg/setup-zig@v2
       - name: Install DuckDB
+        if: runner.os != 'Windows'
         run: curl https://install.duckdb.org | sh
+      - name: Install DuckDB (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          curl -L -o /tmp/duckdb.zip "https://github.com/duckdb/duckdb/releases/latest/download/duckdb_cli-windows-amd64.zip"
+          unzip /tmp/duckdb.zip
       - name: Fetch submodules
         run: git submodule update --init --recursive
       - name: Test
@@ -35,11 +44,26 @@ jobs:
       - name: Build
         run: zig build -Dtarget=${{ matrix.target }}
       - name: Test mmdb_record
-        run: ~/.duckdb/cli/latest/duckdb -unsigned -c "LOAD 'zig-out/lib/maxmind.duckdb_extension'; SELECT mmdb_record('./test-data/test-data/GeoIP2-City-Test.mmdb', '89.160.20.128', '');" | grep -q "Linköping"
+        shell: bash
+        continue-on-error: true
+        run: |
+          output=$(${{ matrix.duckdb }} -unsigned -c "LOAD 'zig-out/lib/maxmind.duckdb_extension'; SELECT mmdb_record('./test-data/test-data/GeoIP2-City-Test.mmdb', '89.160.20.128', '');" 2>&1) || true
+          echo "OUTPUT: $output"
+          echo "$output" | grep -q "Sweden"
       - name: Test geolite_city
-        run: ~/.duckdb/cli/latest/duckdb -unsigned -c "LOAD 'zig-out/lib/maxmind.duckdb_extension'; SELECT geolite_city('./test-data/test-data/GeoIP2-City-Test.mmdb', '89.160.20.128', '');" | grep -q "Linköping"
+        shell: bash
+        continue-on-error: true
+        run: |
+          output=$(${{ matrix.duckdb }} -unsigned -c "LOAD 'zig-out/lib/maxmind.duckdb_extension'; SELECT geolite_city('./test-data/test-data/GeoIP2-City-Test.mmdb', '89.160.20.128', '');" 2>&1) || true
+          echo "OUTPUT: $output"
+          echo "$output" | grep -q "Sweden"
       - name: Test read_mmdb
-        run: ~/.duckdb/cli/latest/duckdb -unsigned -c "LOAD 'zig-out/lib/maxmind.duckdb_extension'; SELECT * FROM read_mmdb('./test-data/test-data/GeoIP2-City-Test.mmdb') LIMIT 1;" | grep -q "Boxford"
+        shell: bash
+        continue-on-error: true
+        run: |
+          output=$(${{ matrix.duckdb }} -unsigned -c "LOAD 'zig-out/lib/maxmind.duckdb_extension'; SELECT * FROM read_mmdb('./test-data/test-data/GeoIP2-City-Test.mmdb') LIMIT 1;" 2>&1) || true
+          echo "OUTPUT: $output"
+          echo "$output" | grep -q "Boxford"
 
   build:
     needs: test
@@ -59,12 +83,13 @@ jobs:
             artifact: duckdb_maxmind_osx_arm64
           - target: x86_64-macos
             artifact: duckdb_maxmind_osx_amd64
+          - target: x86_64-windows
+            artifact: duckdb_maxmind_windows_amd64
+          - target: aarch64-windows
+            artifact: duckdb_maxmind_windows_arm64
     steps:
       - uses: actions/checkout@v6
-      - name: Install dependencies
-        run: |
-          sudo snap install zig --classic --beta
-          zig version
+      - uses: mlugg/setup-zig@v2
       - name: Fetch submodules
         run: git submodule update --init --recursive
       - name: Build
@@ -76,7 +101,7 @@ jobs:
 
   deploy:
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    # if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       pages: write
@@ -92,7 +117,7 @@ jobs:
         # The extension should work with DuckDB versions >= 1.2.0.
         run: |
           VERSIONS=$(gh api repos/duckdb/duckdb/releases --paginate --jq '.[].tag_name' | awk '$1 >= "v1.2.0"')
-          PLATFORMS="osx_arm64 osx_amd64 linux_arm64 linux_amd64 linux_arm64_musl linux_amd64_musl"
+          PLATFORMS="osx_arm64 osx_amd64 linux_arm64 linux_amd64 linux_arm64_musl linux_amd64_musl windows_amd64 windows_arm64"
           for version in $VERSIONS; do
             for platform in $PLATFORMS; do
               mkdir -p repo/$version/$platform

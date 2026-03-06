@@ -408,17 +408,11 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
             ));
 
             // Fields are read from row 0 (constant across the batch).
-            const fields_len = api.duckdb_string_t_length.?(fields_data[0]);
-            const fields_str = if (fields_len > 0)
-                api.duckdb_string_t_data.?(&fields_data[0])[0..fields_len]
-            else
-                "";
+            const fields_str = duckifier.readString(&fields_data[0]);
             const field_names = filter.Fields(std.meta.fields(T).len).parse(fields_str, ',');
 
             // We should re-open the Reader only when the path changes.
-            const first_path_len = api.duckdb_string_t_length.?(path_data[0]);
-            const first_path_ptr = api.duckdb_string_t_data.?(&path_data[0]);
-            var current_path: []const u8 = first_path_ptr[0..first_path_len];
+            var current_path: []const u8 = duckifier.readString(&path_data[0]);
 
             var db = maxminddb.Reader.mmap(allocator, current_path) catch |err| {
                 api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
@@ -433,9 +427,7 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
             var i: u64 = 0;
             var buf: [64]u8 = undefined;
             while (i < input_size) : (i += 1) {
-                const row_path_len = api.duckdb_string_t_length.?(path_data[i]);
-                const row_path_ptr = api.duckdb_string_t_data.?(&path_data[i]);
-                const row_path = row_path_ptr[0..row_path_len];
+                const row_path = duckifier.readString(&path_data[i]);
 
                 if (!std.mem.eql(u8, row_path, current_path)) {
                     const new_db = maxminddb.Reader.mmap(allocator, row_path) catch |err| {
@@ -449,9 +441,7 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
                     current_path = row_path;
                 }
 
-                const ip_len = api.duckdb_string_t_length.?(ip_data[i]);
-                const ip_ptr = api.duckdb_string_t_data.?(&ip_data[i]);
-                const ip_str = ip_ptr[0..ip_len];
+                const ip_str = duckifier.readString(&ip_data[i]);
 
                 const ip = std.net.Address.parseIp(ip_str, 0) catch {
                     duckifier.writeNull(R, output, i);
@@ -496,10 +486,14 @@ fn lookupAnyCallback(
     input: c.duckdb_data_chunk,
     output: c.duckdb_vector,
 ) callconv(.c) void {
+    std.debug.print("[mmdb] lookupAnyCallback entered\n", .{});
+
     const input_size = api.duckdb_data_chunk_get_size.?(input);
     if (input_size == 0) {
         return;
     }
+
+    std.debug.print("[mmdb] input_size={d}\n", .{input_size});
 
     const path_vec = api.duckdb_data_chunk_get_vector.?(input, 0);
     const ip_vec = api.duckdb_data_chunk_get_vector.?(input, 1);
@@ -515,24 +509,25 @@ fn lookupAnyCallback(
         api.duckdb_vector_get_data.?(fields_vec),
     ));
 
+    std.debug.print("[mmdb] vectors ok\n", .{});
+
     // Fields are read from row 0 (constant across the batch).
-    const fields_len = api.duckdb_string_t_length.?(fields_data[0]);
-    const fields_str = if (fields_len > 0)
-        api.duckdb_string_t_data.?(&fields_data[0])[0..fields_len]
-    else
-        "";
+    const fields_str = duckifier.readString(&fields_data[0]);
     const field_names = filter.Fields(max_mmdb_fields).parse(fields_str, ',');
 
     // We should re-open the Reader only when the path changes.
-    const first_path_len = api.duckdb_string_t_length.?(path_data[0]);
-    const first_path_ptr = api.duckdb_string_t_data.?(&path_data[0]);
-    var current_path: []const u8 = first_path_ptr[0..first_path_len];
+    var current_path: []const u8 = duckifier.readString(&path_data[0]);
+
+    std.debug.print("[mmdb] path={s} len={d}\n", .{ current_path, current_path.len });
 
     var db = maxminddb.Reader.mmap(allocator, current_path) catch |err| {
+        std.debug.print("[mmdb] mmap error: {s}\n", .{@errorName(err)});
         api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
         return;
     };
     defer db.unmap();
+
+    std.debug.print("[mmdb] mmap ok\n", .{});
 
     var buf: [json_buf_size]u8 = undefined;
     var w = std.io.Writer.fixed(&buf);
@@ -543,9 +538,7 @@ fn lookupAnyCallback(
 
     var i: u64 = 0;
     while (i < input_size) : (i += 1) {
-        const row_path_len = api.duckdb_string_t_length.?(path_data[i]);
-        const row_path_ptr = api.duckdb_string_t_data.?(&path_data[i]);
-        const row_path = row_path_ptr[0..row_path_len];
+        const row_path = duckifier.readString(&path_data[i]);
 
         if (!std.mem.eql(u8, row_path, current_path)) {
             const new_db = maxminddb.Reader.mmap(allocator, row_path) catch |err| {
@@ -559,9 +552,7 @@ fn lookupAnyCallback(
             current_path = row_path;
         }
 
-        const ip_len = api.duckdb_string_t_length.?(ip_data[i]);
-        const ip_ptr = api.duckdb_string_t_data.?(&ip_data[i]);
-        const ip_str = ip_ptr[0..ip_len];
+        const ip_str = duckifier.readString(&ip_data[i]);
 
         const ip = std.net.Address.parseIp(ip_str, 0) catch {
             duckifier.writeNull([]const u8, output, i);
