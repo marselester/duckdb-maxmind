@@ -9,6 +9,11 @@ const api = &duckdb_ext_api;
 
 const allocator = std.heap.c_allocator;
 
+// Real MMDB databases have at most ~15 top-level fields.
+const max_mmdb_fields = 32;
+// 4KB should be enough to decode most of database records.
+const json_buf_size = 4096;
+
 // Creates, configures, and registers the read_mmdb() table function with DuckDB.
 // This function is exported with C calling convention so it can be called from
 // the C entrypoint in extension.c.
@@ -48,7 +53,7 @@ const BindData = struct {
     // It's heap-allocated with a null terminator so it can be passed to C APIs.
     path: [:0]u8,
     network: maxminddb.Network,
-    db_type: maxminddb.DatabaseType,
+    db_type: ?maxminddb.DatabaseType,
 };
 
 fn destroyBindData(ptr: ?*anyopaque) callconv(.c) void {
@@ -61,7 +66,8 @@ fn destroyBindData(ptr: ?*anyopaque) callconv(.c) void {
 
 // The Bind callback is called once during query planning.
 // Its job is to declare the return schema (column names and types) of the table function.
-// Record fields are flattened into top-level columns to enable projection pushdown.
+// Known database types get flattened record columns (projection pushdown).
+// Unknown types get a single JSON VARCHAR column.
 fn bindCallback(info: c.duckdb_bind_info) callconv(.c) void {
     // Retrieve the file path argument read_mmdb('/my/path') at index 0.
     var path_param = api.duckdb_bind_get_parameter.?(info, 0);
@@ -107,26 +113,28 @@ fn bindCallback(info: c.duckdb_bind_info) callconv(.c) void {
             maxminddb.Network.all_ipv4;
     }
 
-    const db_type = maxminddb.DatabaseType.new(db.metadata.database_type) orelse {
-        api.duckdb_bind_set_error.?(info, "unsupported mmdb database type");
-        return;
-    };
+    const db_type = maxminddb.DatabaseType.new(db.metadata.database_type);
 
     // Column 0: IP network.
     const varchar_type = api.duckdb_create_logical_type.?(c.DUCKDB_TYPE_VARCHAR);
     defer api.duckdb_destroy_logical_type.?(@constCast(&varchar_type));
     api.duckdb_bind_add_result_column.?(info, "network", varchar_type);
 
-    // Columns 1..N: flattened record fields (enables projection pushdown).
-    switch (db_type) {
-        inline else => |dt| {
-            const T = dt.recordType();
-            inline for (std.meta.fields(T)) |f| {
-                const col_type = duckifier.createDuckDBType(f.type);
-                defer api.duckdb_destroy_logical_type.?(@constCast(&col_type));
-                api.duckdb_bind_add_result_column.?(info, f.name, col_type);
-            }
-        },
+    if (db_type != null) {
+        // Columns 1..N: flattened record fields (enables projection pushdown).
+        switch (db_type.?) {
+            inline else => |dt| {
+                const T = dt.recordType();
+                inline for (std.meta.fields(T)) |f| {
+                    const col_type = duckifier.createDuckDBType(f.type);
+                    defer api.duckdb_destroy_logical_type.?(@constCast(&col_type));
+                    api.duckdb_bind_add_result_column.?(info, f.name, col_type);
+                }
+            },
+        }
+    } else {
+        // Column 1: record as JSON VARCHAR for unknown database types.
+        api.duckdb_bind_add_result_column.?(info, "record", varchar_type);
     }
 
     // Hint the query planner with an upper bound on the number of rows.
@@ -154,8 +162,9 @@ fn bindCallback(info: c.duckdb_bind_info) callconv(.c) void {
 // InitData is stored during the init phase and retrieved during the scan phase.
 // It tracks whether all rows have been emitted so the scan knows when to stop.
 fn InitData(comptime T: type) type {
-    const fields = std.meta.fields(T);
-    const max_cols = fields.len + 1; // network + record fields
+    const is_json = T == maxminddb.any.Value;
+    const num_fields: usize = if (is_json) 1 else std.meta.fields(T).len;
+    const max_cols = num_fields + 1; // network + content columns
 
     return struct {
         db: maxminddb.Reader,
@@ -168,7 +177,7 @@ fn InitData(comptime T: type) type {
         num_projected: c.idx_t,
 
         // Field names for projection pushdown filtering.
-        field_names: filter.Fields(fields.len),
+        field_names: filter.Fields(num_fields),
 
         const Self = @This();
 
@@ -189,58 +198,68 @@ fn initCallback(info: c.duckdb_init_info) callconv(.c) void {
     const bind_ptr = api.duckdb_init_get_bind_data.?(info);
     const bind_data: *BindData = @ptrCast(@alignCast(bind_ptr));
 
-    switch (bind_data.db_type) {
-        inline else => |dt| {
-            const T = dt.recordType();
-            const D = InitData(T);
+    if (bind_data.db_type != null) {
+        switch (bind_data.db_type.?) {
+            inline else => |dt| {
+                const T = dt.recordType();
+                initTyped(T, info, bind_data);
+            },
+        }
+    } else {
+        initTyped(maxminddb.any.Value, info, bind_data);
+    }
+}
 
-            const init_data = allocator.create(D) catch {
-                api.duckdb_init_set_error.?(info, "allocate init data");
-                return;
-            };
+fn initTyped(comptime T: type, info: c.duckdb_init_info, bind_data: *BindData) void {
+    const D = InitData(T);
+    const is_json = T == maxminddb.any.Value;
 
-            init_data.db = maxminddb.Reader.mmap(allocator, bind_data.path) catch |err| {
-                api.duckdb_init_set_error.?(info, @errorName(err).ptr);
-                allocator.destroy(init_data);
-                return;
-            };
+    const init_data = allocator.create(D) catch {
+        api.duckdb_init_set_error.?(info, "allocate init data");
+        return;
+    };
 
-            // Read projected columns for projection pushdown.
-            // Build field names so the decoder skips non-projected record fields.
-            const num_projected = api.duckdb_init_get_column_count.?(info);
-            init_data.num_projected = num_projected;
+    init_data.db = maxminddb.Reader.mmap(allocator, bind_data.path) catch |err| {
+        api.duckdb_init_set_error.?(info, @errorName(err).ptr);
+        allocator.destroy(init_data);
+        return;
+    };
 
-            init_data.field_names = .{};
-            for (0..num_projected) |out_idx| {
-                const col_idx = api.duckdb_init_get_column_index.?(info, out_idx);
-                init_data.projected_cols[out_idx] = col_idx;
+    // Read projected columns for projection pushdown.
+    // For typed paths, build field names so the decoder skips non-projected record fields.
+    const num_projected = api.duckdb_init_get_column_count.?(info);
+    init_data.num_projected = num_projected;
 
-                if (col_idx > 0) {
-                    inline for (std.meta.fields(T), 0..) |f, idx| {
-                        if (idx == col_idx - 1) {
-                            init_data.field_names.append(f.name);
-                        }
-                    }
+    init_data.field_names = .{};
+    for (0..num_projected) |out_idx| {
+        const col_idx = api.duckdb_init_get_column_index.?(info, out_idx);
+        init_data.projected_cols[out_idx] = col_idx;
+
+        // For JSON path there's no per-field filtering (the whole record is one column).
+        if (!is_json and col_idx > 0) {
+            inline for (std.meta.fields(T), 0..) |f, idx| {
+                if (idx == col_idx - 1) {
+                    init_data.field_names.append(f.name);
                 }
             }
-
-            init_data.it = init_data.db.within(
-                allocator,
-                T,
-                bind_data.network,
-                .{ .only = init_data.field_names.slice() },
-            ) catch |err| {
-                api.duckdb_init_set_error.?(info, @errorName(err).ptr);
-                init_data.db.unmap();
-                allocator.destroy(init_data);
-                return;
-            };
-
-            init_data.done = false;
-
-            api.duckdb_init_set_init_data.?(info, init_data, D.destroy);
-        },
+        }
     }
+
+    init_data.it = init_data.db.within(
+        allocator,
+        T,
+        bind_data.network,
+        .{ .only = init_data.field_names.slice() },
+    ) catch |err| {
+        api.duckdb_init_set_error.?(info, @errorName(err).ptr);
+        init_data.db.unmap();
+        allocator.destroy(init_data);
+        return;
+    };
+
+    init_data.done = false;
+
+    api.duckdb_init_set_init_data.?(info, init_data, D.destroy);
 }
 
 // The Scan callback is called repeatedly by DuckDB to get the next batch of rows.
@@ -250,55 +269,149 @@ fn scanCallback(info: c.duckdb_function_info, output: c.duckdb_data_chunk) callc
     const bind_ptr = api.duckdb_function_get_bind_data.?(info);
     const bind_data: *BindData = @ptrCast(@alignCast(bind_ptr));
 
-    switch (bind_data.db_type) {
-        inline else => |dt| {
-            const T = dt.recordType();
-            const D = InitData(T);
+    if (bind_data.db_type != null) {
+        switch (bind_data.db_type.?) {
+            inline else => |dt| {
+                const T = dt.recordType();
+                scanTyped(T, info, output);
+            },
+        }
+    } else {
+        scanJSON(info, output);
+    }
+}
 
-            const init_ptr = api.duckdb_function_get_init_data.?(info);
-            const init_data: *D = @ptrCast(@alignCast(init_ptr));
+fn scanTyped(comptime T: type, info: c.duckdb_function_info, output: c.duckdb_data_chunk) void {
+    const D = InitData(T);
+    const max_cols = std.meta.fields(T).len + 1;
 
-            // If we already emitted all rows in a previous call, return an empty chunk.
-            if (init_data.done) {
-                api.duckdb_data_chunk_set_size.?(output, 0);
+    const init_ptr = api.duckdb_function_get_init_data.?(info);
+    const init_data: *D = @ptrCast(@alignCast(init_ptr));
+
+    if (init_data.done) {
+        api.duckdb_data_chunk_set_size.?(output, 0);
+        return;
+    }
+
+    // Resolve output vectors once before the row loop.
+    var net_vec: ?c.duckdb_vector = null;
+    var field_vecs: [max_cols]c.duckdb_vector = undefined;
+    var field_col_idxs: [max_cols]c.idx_t = undefined;
+    var num_fields: usize = 0;
+
+    for (0..init_data.num_projected) |out_idx| {
+        const col_idx = init_data.projected_cols[out_idx];
+        const vec = api.duckdb_data_chunk_get_vector.?(output, out_idx);
+        if (col_idx == 0) {
+            net_vec = vec;
+        } else {
+            field_vecs[num_fields] = vec;
+            field_col_idxs[num_fields] = col_idx;
+            num_fields += 1;
+        }
+    }
+
+    var i: u64 = 0;
+    var buf: [64]u8 = undefined;
+    const chunk_size: u64 = api.duckdb_vector_size.?();
+    while (i < chunk_size) : (i += 1) {
+        const item = init_data.it.next() catch |err| {
+            api.duckdb_function_set_error.?(info, @errorName(err).ptr);
+            return;
+        } orelse {
+            init_data.done = true;
+            break;
+        };
+
+        if (net_vec) |vec| {
+            const net_str = std.fmt.bufPrint(&buf, "{f}", .{item.network}) catch |err| {
+                api.duckdb_function_set_error.?(info, @errorName(err).ptr);
                 return;
-            }
+            };
 
-            var i: u64 = 0;
-            var buf: [64]u8 = undefined;
-            const chunk_size: u64 = api.duckdb_vector_size.?();
-            while (i < chunk_size) : (i += 1) {
-                const item = init_data.it.next() catch |err| {
+            api.duckdb_vector_assign_string_element_len.?(vec, i, net_str.ptr, net_str.len);
+        }
+
+        for (0..num_fields) |j| {
+            duckifier.writeRecordField(T, item.value, field_vecs[j], i, field_col_idxs[j] - 1);
+        }
+    }
+
+    api.duckdb_data_chunk_set_size.?(output, i);
+}
+
+fn scanJSON(info: c.duckdb_function_info, output: c.duckdb_data_chunk) void {
+    const D = InitData(maxminddb.any.Value);
+
+    const init_ptr = api.duckdb_function_get_init_data.?(info);
+    const init_data: *D = @ptrCast(@alignCast(init_ptr));
+
+    if (init_data.done) {
+        api.duckdb_data_chunk_set_size.?(output, 0);
+        return;
+    }
+
+    // Resolve output vectors once before the row loop.
+    var net_vec: ?c.duckdb_vector = null;
+    var rec_vec: ?c.duckdb_vector = null;
+
+    for (0..init_data.num_projected) |out_idx| {
+        const col_idx = init_data.projected_cols[out_idx];
+        const vec = api.duckdb_data_chunk_get_vector.?(output, out_idx);
+        if (col_idx == 0) {
+            net_vec = vec;
+        } else {
+            rec_vec = vec;
+        }
+    }
+
+    var net_buf: [64]u8 = undefined;
+    var json_buf: [json_buf_size]u8 = undefined;
+    var w = std.io.Writer.fixed(&json_buf);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    var i: u64 = 0;
+    const chunk_size: u64 = api.duckdb_vector_size.?();
+    while (i < chunk_size) : (i += 1) {
+        const item = init_data.it.next() catch |err| {
+            api.duckdb_function_set_error.?(info, @errorName(err).ptr);
+            return;
+        } orelse {
+            init_data.done = true;
+            break;
+        };
+
+        if (net_vec) |vec| {
+            const net_str = std.fmt.bufPrint(&net_buf, "{f}", .{item.network}) catch |err| {
+                api.duckdb_function_set_error.?(info, @errorName(err).ptr);
+                return;
+            };
+
+            api.duckdb_vector_assign_string_element_len.?(vec, i, net_str.ptr, net_str.len);
+        }
+
+        if (rec_vec) |vec| {
+            w.end = 0;
+            if (item.value.format(&w)) {
+                api.duckdb_vector_assign_string_element_len.?(vec, i, w.buffer.ptr, w.end);
+            } else |_| {
+                var list: std.ArrayListUnmanaged(u8) = .{};
+                item.value.format(list.writer(arena_allocator)) catch |err| {
                     api.duckdb_function_set_error.?(info, @errorName(err).ptr);
                     return;
-                } orelse {
-                    // Mark that all rows have been emitted so the next call returns an empty chunk.
-                    init_data.done = true;
-                    break;
                 };
 
-                // Write only projected columns.
-                var out_idx: u64 = 0;
-                while (out_idx < init_data.num_projected) : (out_idx += 1) {
-                    const col_idx = init_data.projected_cols[out_idx];
-                    const vec = api.duckdb_data_chunk_get_vector.?(output, out_idx);
-
-                    if (col_idx == 0) {
-                        const net_str = std.fmt.bufPrint(&buf, "{f}", .{item.network}) catch |err| {
-                            api.duckdb_function_set_error.?(info, @errorName(err).ptr);
-                            return;
-                        };
-                        api.duckdb_vector_assign_string_element_len.?(vec, i, net_str.ptr, net_str.len);
-                    } else {
-                        duckifier.writeRecordField(T, item.value, vec, i, col_idx - 1);
-                    }
-                }
+                api.duckdb_vector_assign_string_element_len.?(vec, i, list.items.ptr, list.items.len);
             }
 
-            // Tell DuckDB how many rows we wrote into this chunk.
-            api.duckdb_data_chunk_set_size.?(output, i);
-        },
+            _ = arena.reset(.retain_capacity);
+        }
     }
+
+    api.duckdb_data_chunk_set_size.?(output, i);
 }
 
 // Creates a flat struct type that prepends a network field to db record fields.
@@ -483,11 +596,6 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
         }
     }.callback;
 }
-
-// Real MMDB databases have at most ~15 top-level fields.
-const max_mmdb_fields = 32;
-// 4KB should be enough to decode most of database records.
-const json_buf_size = 4096;
 
 // Scalar function callback for mmdb_record(path, ip, fields).
 // Decodes any MMDB record as any.Value and returns JSON as VARCHAR.
