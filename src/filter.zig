@@ -27,8 +27,17 @@ pub fn Fields(comptime capacity: usize) type {
             self.len += 1;
         }
 
-        pub fn slice(self: *const Self) ?[]const []const u8 {
+        // Returns field names where empty input means "decode all fields", e.g.,
+        // the user didn't specify fields, so we want everything.
+        pub fn only(self: *const Self) ?[]const []const u8 {
             return if (self.len > 0) self.items[0..self.len] else null;
+        }
+
+        // Returns field names where empty input means "decode nothing".
+        // This is used for engine-determined projection in read_mmdb() table function:
+        // no record fields are projected, so we skip record decoding entirely.
+        pub fn slice(self: *const Self) []const []const u8 {
+            return self.items[0..self.len];
         }
     };
 }
@@ -46,7 +55,7 @@ test "parse" {
 
     for (tests) |tc| {
         const f = Fields(4).parse(tc.input, ',');
-        const got = f.slice();
+        const got = f.only();
 
         if (tc.want) |want| {
             try std.testing.expectEqual(want.len, got.?.len);
@@ -61,7 +70,7 @@ test "parse" {
 
 test "parse stops at capacity" {
     const f = Fields(2).parse("a,b,c,d", ',');
-    const s = f.slice().?;
+    const s = f.slice();
 
     try std.testing.expectEqual(2, s.len);
     try std.testing.expectEqualStrings("a", s[0]);
@@ -72,14 +81,19 @@ test "append and slice" {
     var f: Fields(3) = .{};
     f.append("city");
     f.append("country");
-    const s = f.slice().?;
+    const s = f.slice();
 
     try std.testing.expectEqual(2, s.len);
     try std.testing.expectEqualStrings("city", s[0]);
     try std.testing.expectEqualStrings("country", s[1]);
 }
 
-test "slice returns null when empty" {
+test "slice returns empty when no fields" {
     const f: Fields(3) = .{};
-    try std.testing.expectEqual(null, f.slice());
+    try std.testing.expectEqual(0, f.slice().len);
+}
+
+test "only returns null when empty" {
+    const f: Fields(3) = .{};
+    try std.testing.expectEqual(null, f.only());
 }

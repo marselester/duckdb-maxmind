@@ -226,16 +226,21 @@ fn initTyped(comptime T: type, info: c.duckdb_init_info, bind_data: *BindData) v
     };
 
     // Read projected columns for projection pushdown.
-    // For typed paths, build field names so the decoder skips non-projected record fields.
+    // Typed: build field names so the decoder skips non-projected record fields.
+    // JSON: track whether the record column is projected (no per-field filtering).
     const num_projected = api.duckdb_init_get_column_count.?(info);
     init_data.num_projected = num_projected;
 
+    var needs_record = false;
     init_data.field_names = .{};
     for (0..num_projected) |out_idx| {
         const col_idx = api.duckdb_init_get_column_index.?(info, out_idx);
         init_data.projected_cols[out_idx] = col_idx;
 
-        // For JSON path there's no per-field filtering (the whole record is one column).
+        if (is_json and col_idx > 0) {
+            needs_record = true;
+        }
+
         if (!is_json and col_idx > 0) {
             inline for (std.meta.fields(T), 0..) |f, idx| {
                 if (idx == col_idx - 1) {
@@ -249,7 +254,9 @@ fn initTyped(comptime T: type, info: c.duckdb_init_info, bind_data: *BindData) v
         allocator,
         T,
         bind_data.network,
-        .{ .only = init_data.field_names.slice() },
+        // Empty slice means no record fields projected, so we skip decoding entirely.
+        // For JSON: null means decode all (when record column is projected).
+        .{ .only = if (is_json and needs_record) null else init_data.field_names.slice() },
     ) catch |err| {
         api.duckdb_init_set_error.?(info, @errorName(err).ptr);
         init_data.db.unmap();
@@ -571,7 +578,7 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
                     continue;
                 };
 
-                const result = db.lookup(arena_allocator, T, ip, .{ .only = field_names.slice() }) catch |err| {
+                const result = db.lookup(arena_allocator, T, ip, .{ .only = field_names.only() }) catch |err| {
                     api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
                     return;
                 } orelse {
@@ -680,7 +687,7 @@ fn lookupAnyCallback(
             arena_allocator,
             maxminddb.any.Value,
             ip,
-            .{ .only = field_names.slice() },
+            .{ .only = field_names.only() },
         ) catch |err| {
             api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
             return;

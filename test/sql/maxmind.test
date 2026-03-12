@@ -40,7 +40,22 @@ SELECT * FROM read_mmdb(NULL) LIMIT 1;
 ----
 path must not be NULL
 
+query I
+SELECT count(*) FROM read_mmdb('./test-data/test-data/GeoIP2-City-Test.mmdb');
+----
+250
+
+query I
+SELECT network FROM read_mmdb('./test-data/test-data/GeoIP2-City-Test.mmdb', network='89.160.20.0/24') LIMIT 1;
+----
+89.160.20.112/28
+
 # read_mmdb: unknown database type returns JSON.
+
+query I
+SELECT count(*) FROM read_mmdb('./test-data/test-data/MaxMind-DB-test-mixed-24.mmdb');
+----
+11
 
 query II
 SELECT network, record FROM read_mmdb('./test-data/test-data/MaxMind-DB-test-mixed-24.mmdb') LIMIT 1;
@@ -61,13 +76,6 @@ query I
 SELECT record FROM read_mmdb('./test-data/test-data/MaxMind-DB-test-mixed-24.mmdb', network='1.1.1.1/32') LIMIT 1;
 ----
 {"ip":"::1.1.1.1"}
-
-# read_mmdb: only network projected (typed path).
-
-query I
-SELECT network FROM read_mmdb('./test-data/test-data/GeoIP2-City-Test.mmdb', network='89.160.20.0/24') LIMIT 1;
-----
-89.160.20.112/28
 
 # Typed scalar functions (one per database type).
 
