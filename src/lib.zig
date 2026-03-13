@@ -29,10 +29,15 @@ pub export fn register_read_function(conn: c.duckdb_connection) callconv(.c) c.d
     const varchar_type = api.duckdb_create_logical_type.?(c.DUCKDB_TYPE_VARCHAR);
     defer api.duckdb_destroy_logical_type.?(@constCast(&varchar_type));
 
+    const bool_type = api.duckdb_create_logical_type.?(c.DUCKDB_TYPE_BOOLEAN);
+    defer api.duckdb_destroy_logical_type.?(@constCast(&bool_type));
+
     // Positional: file path to the mmdb database.
     api.duckdb_table_function_add_parameter.?(tf, varchar_type);
     // Optional named: network filter, e.g., read_mmdb('my.mmdb', network='1.0.0.0/8').
     api.duckdb_table_function_add_named_parameter.?(tf, "network", varchar_type);
+    // Optional named: include empty records, e.g., read_mmdb('my.mmdb', include_empty=true).
+    api.duckdb_table_function_add_named_parameter.?(tf, "include_empty", bool_type);
 
     // Wire up the required callbacks:
     // - bind: called during planning to declare the result schema
@@ -53,6 +58,7 @@ const BindData = struct {
     // It's heap-allocated with a null terminator so it can be passed to C APIs.
     path: [:0]u8,
     network: maxminddb.Network,
+    include_empty: bool,
     db_type: ?maxminddb.DatabaseType,
 };
 
@@ -98,6 +104,15 @@ fn bindCallback(info: c.duckdb_bind_info) callconv(.c) void {
                 };
             }
         }
+    }
+
+    // Parse optional include_empty parameter.
+    var include_empty = false;
+    var include_empty_param = api.duckdb_bind_get_named_parameter.?(info, "include_empty");
+    if (include_empty_param != null) {
+        defer api.duckdb_destroy_value.?(&include_empty_param);
+
+        include_empty = api.duckdb_get_bool.?(include_empty_param);
     }
 
     var db = maxminddb.Reader.mmap(allocator, path) catch |err| {
@@ -155,6 +170,7 @@ fn bindCallback(info: c.duckdb_bind_info) callconv(.c) void {
     bind_data.network = network.?;
 
     bind_data.db_type = db_type;
+    bind_data.include_empty = include_empty;
 
     api.duckdb_bind_set_bind_data.?(info, bind_data, destroyBindData);
 }
@@ -254,9 +270,12 @@ fn initTyped(comptime T: type, info: c.duckdb_init_info, bind_data: *BindData) v
         allocator,
         T,
         bind_data.network,
-        // Empty slice means no record fields projected, so we skip decoding entirely.
-        // For JSON: null means decode all (when record column is projected).
-        .{ .only = if (is_json and needs_record) null else init_data.field_names.slice() },
+        .{
+            // Empty slice means no record fields projected, so we skip decoding entirely.
+            // For JSON: null means decode all (when record column is projected).
+            .only = if (is_json and needs_record) null else init_data.field_names.slice(),
+            .include_empty_values = bind_data.include_empty,
+        },
     ) catch |err| {
         api.duckdb_init_set_error.?(info, @errorName(err).ptr);
         init_data.db.unmap();

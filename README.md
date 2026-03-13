@@ -84,6 +84,7 @@ such as city, country, location.
 For unknown database types, records are returned as JSON in a `record` VARCHAR column.
 Use the optional `network` parameter to limit the scan,
 for example, `read_mmdb(path, network='1.0.0.0/8')`.
+Empty records are excluded by default, use `include_empty=true` to include them.
 
 Scalar function `mmdb_record(path, ip, fields)` works with any MMDB file
 and returns the record as JSON string.
