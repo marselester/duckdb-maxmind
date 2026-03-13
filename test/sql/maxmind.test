@@ -25,21 +25,6 @@ SELECT country.names.en FROM read_mmdb('./test-data/test-data/GeoIP2-City-Test.m
 ----
 Japan
 
-statement error
-SELECT * FROM read_mmdb('./nonexistent.mmdb') LIMIT 1;
-----
-FileNotFound
-
-statement error
-SELECT * FROM read_mmdb('./test-data/test-data/GeoIP2-City-Test.mmdb', network='invalid') LIMIT 1;
-----
-parsing network
-
-statement error
-SELECT * FROM read_mmdb(NULL) LIMIT 1;
-----
-path must not be NULL
-
 query I
 SELECT count(*) FROM read_mmdb('./test-data/test-data/GeoIP2-City-Test.mmdb');
 ----
@@ -49,6 +34,33 @@ query I
 SELECT network FROM read_mmdb('./test-data/test-data/GeoIP2-City-Test.mmdb', network='89.160.20.0/24') LIMIT 1;
 ----
 89.160.20.112/28
+
+# read_mmdb: include_empty parameter.
+
+query I
+SELECT count(*) FROM read_mmdb('./test-data/test-data/GeoIP2-Anonymous-IP-Test.mmdb');
+----
+12
+
+query I
+SELECT count(*) FROM read_mmdb('./test-data/test-data/GeoIP2-Anonymous-IP-Test.mmdb', include_empty=true);
+----
+599
+
+query I
+SELECT count(*) FROM read_mmdb('./test-data/test-data/GeoIP2-Anonymous-IP-Test.mmdb', include_empty=false);
+----
+12
+
+query I
+SELECT count(*) FROM read_mmdb('./test-data/test-data/GeoIP2-Anonymous-IP-Test.mmdb', network='1.0.0.0/8', include_empty=true);
+----
+31
+
+query I
+SELECT count(*) FROM read_mmdb('./test-data/test-data/GeoIP2-Anonymous-IP-Test.mmdb', network='1.0.0.0/8', include_empty=false);
+----
+2
 
 # read_mmdb: unknown database type returns JSON.
 
@@ -76,6 +88,28 @@ query I
 SELECT record FROM read_mmdb('./test-data/test-data/MaxMind-DB-test-mixed-24.mmdb', network='1.1.1.1/32') LIMIT 1;
 ----
 {"ip":"::1.1.1.1"}
+
+query I
+SELECT count(*) FROM read_mmdb('./test-data/test-data/MaxMind-DB-test-mixed-24.mmdb', include_empty=true);
+----
+11
+
+# read_mmdb: edge cases.
+
+statement error
+SELECT * FROM read_mmdb('./nonexistent.mmdb') LIMIT 1;
+----
+FileNotFound
+
+statement error
+SELECT * FROM read_mmdb('./test-data/test-data/GeoIP2-City-Test.mmdb', network='invalid') LIMIT 1;
+----
+parsing network
+
+statement error
+SELECT * FROM read_mmdb(NULL) LIMIT 1;
+----
+path must not be NULL
 
 # Typed scalar functions (one per database type).
 
@@ -112,7 +146,7 @@ Linköping
 query I
 SELECT geolite_city('./test-data/test-data/GeoIP2-City-Test.mmdb', '89.160.20.128', 'city,country');
 ----
-{'network': 89.160.20.128/25, 'city': {'geoname_id': 2694762, 'names': {de=Linköping, en=Linköping, fr=Linköping, ja=リンシェーピング, zh-CN=林雪平}}, 'continent': {'code': '', 'geoname_id': 0, 'names': NULL}, 'country': {'geoname_id': 2661886, 'is_in_european_union': true, 'iso_code': SE, 'names': {de=Schweden, en=Sweden, es=Suecia, fr=Suède, ja=スウェーデン王国, pt-BR=Suécia, ru=Швеция, zh-CN=瑞典}}, 'location': {'accuracy_radius': 0, 'latitude': 0.0, 'longitude': 0.0, 'metro_code': 0, 'time_zone': ''}, 'postal': {'code': ''}, 'registered_country': {'geoname_id': 0, 'is_in_european_union': false, 'iso_code': '', 'names': NULL}, 'represented_country': {'geoname_id': 0, 'is_in_european_union': false, 'iso_code': '', 'names': NULL, 'type': ''}, 'subdivisions': NULL}
+{'network': 89.160.20.128/25, 'city': {'geoname_id': 2694762, 'names': {de=Linköping, en=Linköping, fr=Linköping, ja=リンシェーピング, zh-CN=林雪平}}, 'continent': {'code': '', 'geoname_id': 0, 'names': NULL}, 'country': {'geoname_id': 2661886, 'is_in_european_union': true, 'iso_code': SE, 'names': {de=Schweden, en=Sweden, es=Suecia, fr=Suède, ja=スウェーデン王国, pt-BR=Suécia, ru=Швеция, zh-CN=瑞典}}, 'location': {'accuracy_radius': 0, 'latitude': NULL, 'longitude': NULL, 'time_zone': ''}, 'postal': {'code': ''}, 'registered_country': {'geoname_id': 0, 'is_in_european_union': false, 'iso_code': '', 'names': NULL}, 'represented_country': {'geoname_id': 0, 'is_in_european_union': false, 'iso_code': '', 'names': NULL, 'type': ''}, 'subdivisions': NULL}
 
 query I
 SELECT geolite_country('./test-data/test-data/GeoLite2-Country-Test.mmdb', '2.125.160.216', '').country.names.en;
