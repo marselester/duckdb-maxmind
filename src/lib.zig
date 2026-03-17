@@ -115,11 +115,11 @@ fn bindCallback(info: c.duckdb_bind_info) callconv(.c) void {
         include_empty = api.duckdb_get_bool.?(include_empty_param);
     }
 
-    var db = maxminddb.Reader.mmap(allocator, path) catch |err| {
+    var db = maxminddb.Reader.mmap(allocator, path, .{}) catch |err| {
         api.duckdb_bind_set_error.?(info, @errorName(err).ptr);
         return;
     };
-    defer db.unmap();
+    defer db.close();
 
     if (network == null) {
         network = if (db.metadata.ip_version == 6)
@@ -201,7 +201,7 @@ fn InitData(comptime T: type) type {
             if (ptr) |p| {
                 const d: *Self = @ptrCast(@alignCast(p));
                 d.it.deinit();
-                d.db.unmap();
+                d.db.close();
                 allocator.destroy(d);
             }
         }
@@ -235,7 +235,7 @@ fn initTyped(comptime T: type, info: c.duckdb_init_info, bind_data: *BindData) v
         return;
     };
 
-    init_data.db = maxminddb.Reader.mmap(allocator, bind_data.path) catch |err| {
+    init_data.db = maxminddb.Reader.mmap(allocator, bind_data.path, .{}) catch |err| {
         api.duckdb_init_set_error.?(info, @errorName(err).ptr);
         allocator.destroy(init_data);
         return;
@@ -278,7 +278,7 @@ fn initTyped(comptime T: type, info: c.duckdb_init_info, bind_data: *BindData) v
         },
     ) catch |err| {
         api.duckdb_init_set_error.?(info, @errorName(err).ptr);
-        init_data.db.unmap();
+        init_data.db.close();
         allocator.destroy(init_data);
         return;
     };
@@ -553,11 +553,11 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
             // We should re-open the Reader only when the path changes.
             var current_path: []const u8 = duckifier.readString(&path_data[0]);
 
-            var db = maxminddb.Reader.mmap(allocator, current_path) catch |err| {
+            var db = maxminddb.Reader.mmap(allocator, current_path, .{}) catch |err| {
                 api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
                 return;
             };
-            defer db.unmap();
+            defer db.close();
 
             var arena = std.heap.ArenaAllocator.init(allocator);
             defer arena.deinit();
@@ -569,12 +569,12 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
                 const row_path = duckifier.readString(&path_data[i]);
 
                 if (!std.mem.eql(u8, row_path, current_path)) {
-                    const new_db = maxminddb.Reader.mmap(allocator, row_path) catch |err| {
+                    const new_db = maxminddb.Reader.mmap(allocator, row_path, .{}) catch |err| {
                         api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
                         return;
                     };
 
-                    db.unmap();
+                    db.close();
                     db = new_db;
 
                     current_path = row_path;
@@ -587,7 +587,15 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
                     continue;
                 };
 
-                const result = db.lookup(arena_allocator, T, ip, .{ .only = field_names.only() }) catch |err| {
+                const result = db.lookup(
+                    arena_allocator,
+                    T,
+                    ip,
+                    .{
+                        .only = field_names.only(),
+                        .include_empty_values = false,
+                    },
+                ) catch |err| {
                     api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
                     return;
                 } orelse {
@@ -646,11 +654,11 @@ fn lookupAnyCallback(
     // We should re-open the Reader only when the path changes.
     var current_path: []const u8 = duckifier.readString(&path_data[0]);
 
-    var db = maxminddb.Reader.mmap(allocator, current_path) catch |err| {
+    var db = maxminddb.Reader.mmap(allocator, current_path, .{}) catch |err| {
         api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
         return;
     };
-    defer db.unmap();
+    defer db.close();
 
     var buf: [json_buf_size]u8 = undefined;
     var w = std.io.Writer.fixed(&buf);
@@ -664,12 +672,12 @@ fn lookupAnyCallback(
         const row_path = duckifier.readString(&path_data[i]);
 
         if (!std.mem.eql(u8, row_path, current_path)) {
-            const new_db = maxminddb.Reader.mmap(allocator, row_path) catch |err| {
+            const new_db = maxminddb.Reader.mmap(allocator, row_path, .{}) catch |err| {
                 api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
                 return;
             };
 
-            db.unmap();
+            db.close();
             db = new_db;
 
             current_path = row_path;
@@ -686,7 +694,10 @@ fn lookupAnyCallback(
             arena_allocator,
             maxminddb.any.Value,
             ip,
-            .{ .only = field_names.only() },
+            .{
+                .only = field_names.only(),
+                .include_empty_values = false,
+            },
         ) catch |err| {
             api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
             return;
