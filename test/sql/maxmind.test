@@ -258,6 +258,11 @@ SELECT geolite_city('./test-data/test-data/GeoIP2-City-Test.mmdb', '192.168.1.1'
 ----
 NULL
 
+query I
+SELECT geoip_anonymous_ip('./test-data/test-data/GeoIP2-Anonymous-IP-Test.mmdb', '1.0.0.0', '');
+----
+NULL
+
 # mmdb_record scalar function.
 
 query I
@@ -302,6 +307,11 @@ SELECT path, mmdb_record(path, '2.2.3.0', 'city') AS rec FROM (VALUES ('./test-d
 
 query I
 SELECT mmdb_record('./test-data/test-data/GeoLite2-City-Test.mmdb', '0.0.0.0', '');
+----
+NULL
+
+query I
+SELECT mmdb_record('./test-data/test-data/GeoIP2-Anonymous-IP-Test.mmdb', '1.0.0.0', '');
 ----
 NULL
 
