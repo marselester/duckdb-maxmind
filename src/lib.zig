@@ -184,23 +184,22 @@ fn InitData(comptime T: type) type {
 
     return struct {
         db: maxminddb.Reader,
+        cache: maxminddb.Cache(T),
         it: maxminddb.Iterator(T),
-        // Whether all rows have been emitted to DuckDB.
-        done: bool,
-
         // Maps output chunk vector position to original column index.
         projected_cols: [max_cols]c.idx_t,
         num_projected: c.idx_t,
-
         // Field names for projection pushdown filtering.
         field_names: filter.Fields(num_fields),
+        // Whether all rows have been emitted to DuckDB.
+        done: bool,
 
         const Self = @This();
 
         fn destroy(ptr: ?*anyopaque) callconv(.c) void {
             if (ptr) |p| {
                 const d: *Self = @ptrCast(@alignCast(p));
-                d.it.deinit();
+                d.cache.deinit();
                 d.db.close();
                 allocator.destroy(d);
             }
@@ -266,9 +265,16 @@ fn initTyped(comptime T: type, info: c.duckdb_init_info, bind_data: *BindData) v
         }
     }
 
-    init_data.it = init_data.db.within(
-        allocator,
+    init_data.cache = maxminddb.Cache(T).init(allocator, .{}) catch {
+        api.duckdb_init_set_error.?(info, "allocate cache");
+        init_data.db.close();
+        allocator.destroy(init_data);
+        return;
+    };
+
+    init_data.it = init_data.db.scanWithCache(
         T,
+        &init_data.cache,
         bind_data.network,
         .{
             // Empty slice means no record fields projected, so we skip decoding entirely.
@@ -278,6 +284,7 @@ fn initTyped(comptime T: type, info: c.duckdb_init_info, bind_data: *BindData) v
         },
     ) catch |err| {
         api.duckdb_init_set_error.?(info, @errorName(err).ptr);
+        init_data.cache.deinit();
         init_data.db.close();
         allocator.destroy(init_data);
         return;
@@ -587,9 +594,11 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
                     continue;
                 };
 
+                _ = arena.reset(.retain_capacity);
+
                 const result = db.lookup(
-                    arena_allocator,
                     T,
+                    arena_allocator,
                     ip,
                     .{
                         .only = field_names.only(),
@@ -614,8 +623,6 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
                     @field(r, f.name) = @field(result.value, f.name);
                 }
                 duckifier.writeValue(R, r, output, i);
-
-                _ = arena.reset(.retain_capacity);
             }
         }
     }.callback;
@@ -690,9 +697,11 @@ fn lookupAnyCallback(
             continue;
         };
 
+        _ = arena.reset(.retain_capacity);
+
         const result = db.lookup(
-            arena_allocator,
             maxminddb.any.Value,
+            arena_allocator,
             ip,
             .{
                 .only = field_names.only(),
@@ -720,7 +729,5 @@ fn lookupAnyCallback(
 
             api.duckdb_vector_assign_string_element_len.?(output, i, list.items.ptr, list.items.len);
         }
-
-        _ = arena.reset(.retain_capacity);
     }
 }
