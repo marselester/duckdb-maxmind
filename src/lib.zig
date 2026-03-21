@@ -13,6 +13,8 @@ const allocator = std.heap.c_allocator;
 const max_mmdb_fields = 32;
 // 4KB should be enough to decode most of database records.
 const json_buf_size = 4096;
+// Cache size for within() iterator caching.
+const within_cache_size = 16;
 
 // Creates, configures, and registers the read_mmdb() table function with DuckDB.
 // This function is exported with C calling convention so it can be called from
@@ -195,12 +197,14 @@ fn InitData(comptime T: type) type {
         // Field names for projection pushdown filtering.
         field_names: filter.Fields(num_fields),
 
+        cache: maxminddb.Cache(T),
+
         const Self = @This();
 
         fn destroy(ptr: ?*anyopaque) callconv(.c) void {
             if (ptr) |p| {
                 const d: *Self = @ptrCast(@alignCast(p));
-                d.it.deinit();
+                d.cache.deinit();
                 d.db.close();
                 allocator.destroy(d);
             }
@@ -266,9 +270,16 @@ fn initTyped(comptime T: type, info: c.duckdb_init_info, bind_data: *BindData) v
         }
     }
 
-    init_data.it = init_data.db.within(
-        allocator,
+    init_data.cache = maxminddb.Cache(T).init(allocator, .{ .size = within_cache_size }) catch {
+        api.duckdb_init_set_error.?(info, "allocate cache");
+        init_data.db.close();
+        allocator.destroy(init_data);
+        return;
+    };
+
+    init_data.it = init_data.db.scanWithCache(
         T,
+        &init_data.cache,
         bind_data.network,
         .{
             // Empty slice means no record fields projected, so we skip decoding entirely.
@@ -278,6 +289,7 @@ fn initTyped(comptime T: type, info: c.duckdb_init_info, bind_data: *BindData) v
         },
     ) catch |err| {
         api.duckdb_init_set_error.?(info, @errorName(err).ptr);
+        init_data.cache.deinit();
         init_data.db.close();
         allocator.destroy(init_data);
         return;
@@ -587,9 +599,11 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
                     continue;
                 };
 
+                _ = arena.reset(.retain_capacity);
+
                 const result = db.lookup(
-                    arena_allocator,
                     T,
+                    arena_allocator,
                     ip,
                     .{
                         .only = field_names.only(),
@@ -614,8 +628,6 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
                     @field(r, f.name) = @field(result.value, f.name);
                 }
                 duckifier.writeValue(R, r, output, i);
-
-                _ = arena.reset(.retain_capacity);
             }
         }
     }.callback;
@@ -690,9 +702,11 @@ fn lookupAnyCallback(
             continue;
         };
 
+        _ = arena.reset(.retain_capacity);
+
         const result = db.lookup(
-            arena_allocator,
             maxminddb.any.Value,
+            arena_allocator,
             ip,
             .{
                 .only = field_names.only(),
@@ -720,7 +734,5 @@ fn lookupAnyCallback(
 
             api.duckdb_vector_assign_string_element_len.?(output, i, list.items.ptr, list.items.len);
         }
-
-        _ = arena.reset(.retain_capacity);
     }
 }
