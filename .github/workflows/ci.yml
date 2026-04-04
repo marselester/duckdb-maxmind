@@ -24,8 +24,6 @@ jobs:
         run: choco install make
       - name: Fetch submodules
         run: git submodule update --init --recursive
-      - name: Unit tests
-        run: zig build test
       - name: Build and test extension
         run: make configure release test_release
 

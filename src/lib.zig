@@ -2,7 +2,6 @@ const std = @import("std");
 const c = @import("duckdb");
 const maxminddb = @import("maxminddb");
 const duckifier = @import("duckifier.zig");
-const filter = @import("filter.zig");
 
 extern const duckdb_ext_api: c.duckdb_ext_api_v1;
 const api = &duckdb_ext_api;
@@ -190,7 +189,7 @@ fn InitData(comptime T: type) type {
         projected_cols: [max_cols]c.idx_t,
         num_projected: c.idx_t,
         // Field names for projection pushdown filtering.
-        field_names: filter.Fields(num_fields),
+        field_names: maxminddb.Fields(num_fields),
         // Whether all rows have been emitted to DuckDB.
         done: bool,
 
@@ -259,7 +258,7 @@ fn initTyped(comptime T: type, info: c.duckdb_init_info, bind_data: *BindData) v
         if (!is_json and col_idx > 0) {
             inline for (std.meta.fields(T), 0..) |f, idx| {
                 if (idx == col_idx - 1) {
-                    init_data.field_names.append(f.name);
+                    init_data.field_names.append(f.name) catch unreachable;
                 }
             }
         }
@@ -279,7 +278,10 @@ fn initTyped(comptime T: type, info: c.duckdb_init_info, bind_data: *BindData) v
         .{
             // Empty slice means no record fields projected, so we skip decoding entirely.
             // For JSON: null means decode all (when record column is projected).
-            .only = if (is_json and needs_record) null else init_data.field_names.slice(),
+            .only = if (is_json and needs_record)
+                null
+            else
+                init_data.field_names.items[0..init_data.field_names.len],
             .include_empty_values = bind_data.include_empty,
         },
     ) catch |err| {
@@ -555,7 +557,10 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
 
             // Fields are read from row 0 (constant across the batch).
             const fields_str = duckifier.readString(&fields_data[0]);
-            const field_names = filter.Fields(std.meta.fields(T).len).parse(fields_str, ',');
+            const field_names = maxminddb.Fields(std.meta.fields(T).len).parse(fields_str, ',') catch |err| {
+                api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
+                return;
+            };
 
             // We should re-open the Reader only when the path changes.
             var current_path: []const u8 = duckifier.readString(&path_data[0]);
@@ -656,7 +661,10 @@ fn lookupAnyCallback(
 
     // Fields are read from row 0 (constant across the batch).
     const fields_str = duckifier.readString(&fields_data[0]);
-    const field_names = filter.Fields(max_mmdb_fields).parse(fields_str, ',');
+    const field_names = maxminddb.Fields(max_mmdb_fields).parse(fields_str, ',') catch |err| {
+        api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
+        return;
+    };
 
     // We should re-open the Reader only when the path changes.
     var current_path: []const u8 = duckifier.readString(&path_data[0]);

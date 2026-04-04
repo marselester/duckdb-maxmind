@@ -78,20 +78,6 @@ pub fn build(b: *std.Build) void {
     add_metadata.step.dependOn(&lib_install.step);
     b.getInstallStep().dependOn(&add_metadata.step);
 
-    {
-        const tests = b.addTest(.{
-            .root_module = b.createModule(.{
-                .target = target,
-                .optimize = optimize,
-                .root_source_file = b.path("src/filter.zig"),
-            }),
-        });
-
-        const run_tests = b.addRunArtifact(tests);
-        const test_step = b.step("test", "Run unit tests");
-        test_step.dependOn(&run_tests.step);
-    }
-
     const benchmarks = [_]struct {
         file: []const u8,
         name: []const u8,

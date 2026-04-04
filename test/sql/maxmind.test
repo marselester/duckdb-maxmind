@@ -263,6 +263,11 @@ SELECT geoip_anonymous_ip('./test-data/test-data/GeoIP2-Anonymous-IP-Test.mmdb',
 ----
 NULL
 
+statement error
+SELECT geolite_asn('./test-data/test-data/GeoLite2-ASN-Test.mmdb', '1.0.0.0', 'autonomous_system_number,autonomous_system_organization,extra');
+----
+TooManyFields
+
 # mmdb_record scalar function.
 
 query I
@@ -339,3 +344,8 @@ query I
 SELECT mmdb_record('./test-data/test-data/GeoIP2-City-Test.mmdb', '89.160.20.128', NULL);
 ----
 NULL
+
+statement error
+SELECT mmdb_record('./test-data/test-data/GeoIP2-City-Test.mmdb', '89.160.20.128', 'a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,q,r,s,t,u,v,w,x,y,z,a1,b1,c1,d1,e1,f1,g1');
+----
+TooManyFields
