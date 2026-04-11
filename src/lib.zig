@@ -184,7 +184,8 @@ fn InitData(comptime T: type) type {
     return struct {
         db: maxminddb.Reader,
         cache: maxminddb.Cache(T),
-        it: maxminddb.Iterator(T),
+        it: maxminddb.EntryIterator,
+        decode_options: maxminddb.Reader.DecodeOptions,
         // Maps output chunk vector position to original column index.
         projected_cols: [max_cols]c.idx_t,
         num_projected: c.idx_t,
@@ -271,20 +272,18 @@ fn initTyped(comptime T: type, info: c.duckdb_init_info, bind_data: *BindData) v
         return;
     };
 
-    init_data.it = init_data.db.scanWithCache(
-        T,
-        &init_data.cache,
-        bind_data.network,
-        .{
-            // Empty slice means no record fields projected, so we skip decoding entirely.
-            // For JSON: null means decode all (when record column is projected).
-            .only = if (is_json and needs_record)
-                null
-            else
-                init_data.field_names.items[0..init_data.field_names.len],
-            .include_empty_values = bind_data.include_empty,
-        },
-    ) catch |err| {
+    // Empty slice means no record fields projected, so we skip decoding entirely.
+    // For JSON: null means decode all (when record column is projected).
+    init_data.decode_options = .{
+        .only = if (is_json and needs_record)
+            null
+        else
+            init_data.field_names.items[0..init_data.field_names.len],
+    };
+
+    init_data.it = init_data.db.entries(bind_data.network, .{
+        .include_empty_values = bind_data.include_empty,
+    }) catch |err| {
         api.duckdb_init_set_error.?(info, @errorName(err).ptr);
         init_data.cache.deinit();
         init_data.db.close();
@@ -350,7 +349,7 @@ fn scanTyped(comptime T: type, info: c.duckdb_function_info, output: c.duckdb_da
     var buf: [64]u8 = undefined;
     const chunk_size: u64 = api.duckdb_vector_size.?();
     while (i < chunk_size) : (i += 1) {
-        const item = init_data.it.next() catch |err| {
+        const entry = init_data.it.next() catch |err| {
             api.duckdb_function_set_error.?(info, @errorName(err).ptr);
             return;
         } orelse {
@@ -359,7 +358,7 @@ fn scanTyped(comptime T: type, info: c.duckdb_function_info, output: c.duckdb_da
         };
 
         if (net_vec) |vec| {
-            const net_str = std.fmt.bufPrint(&buf, "{f}", .{item.network}) catch |err| {
+            const net_str = std.fmt.bufPrint(&buf, "{f}", .{entry.network}) catch |err| {
                 api.duckdb_function_set_error.?(info, @errorName(err).ptr);
                 return;
             };
@@ -367,8 +366,20 @@ fn scanTyped(comptime T: type, info: c.duckdb_function_info, output: c.duckdb_da
             api.duckdb_vector_assign_string_element_len.?(vec, i, net_str.ptr, net_str.len);
         }
 
-        for (0..num_fields) |j| {
-            duckifier.writeRecordField(T, item.value, field_vecs[j], i, field_col_idxs[j] - 1);
+        // Skip decoding when only the network column is projected.
+        if (num_fields > 0) {
+            const value = init_data.cache.decode(
+                &init_data.db,
+                entry,
+                init_data.decode_options,
+            ) catch |err| {
+                api.duckdb_function_set_error.?(info, @errorName(err).ptr);
+                return;
+            };
+
+            for (0..num_fields) |j| {
+                duckifier.writeRecordField(T, value, field_vecs[j], i, field_col_idxs[j] - 1);
+            }
         }
     }
 
@@ -411,7 +422,7 @@ fn scanJSON(info: c.duckdb_function_info, output: c.duckdb_data_chunk) void {
     var i: u64 = 0;
     const chunk_size: u64 = api.duckdb_vector_size.?();
     while (i < chunk_size) : (i += 1) {
-        const item = init_data.it.next() catch |err| {
+        const entry = init_data.it.next() catch |err| {
             api.duckdb_function_set_error.?(info, @errorName(err).ptr);
             return;
         } orelse {
@@ -420,7 +431,7 @@ fn scanJSON(info: c.duckdb_function_info, output: c.duckdb_data_chunk) void {
         };
 
         if (net_vec) |vec| {
-            const net_str = std.fmt.bufPrint(&net_buf, "{f}", .{item.network}) catch |err| {
+            const net_str = std.fmt.bufPrint(&net_buf, "{f}", .{entry.network}) catch |err| {
                 api.duckdb_function_set_error.?(info, @errorName(err).ptr);
                 return;
             };
@@ -428,13 +439,23 @@ fn scanJSON(info: c.duckdb_function_info, output: c.duckdb_data_chunk) void {
             api.duckdb_vector_assign_string_element_len.?(vec, i, net_str.ptr, net_str.len);
         }
 
+        // Skip decoding when only the network column is projected.
         if (rec_vec) |vec| {
+            const value = init_data.cache.decode(
+                &init_data.db,
+                entry,
+                init_data.decode_options,
+            ) catch |err| {
+                api.duckdb_function_set_error.?(info, @errorName(err).ptr);
+                return;
+            };
+
             w.end = 0;
-            if (item.value.format(&w)) {
+            if (value.format(&w)) {
                 api.duckdb_vector_assign_string_element_len.?(vec, i, w.buffer.ptr, w.end);
             } else |_| {
                 var list: std.ArrayListUnmanaged(u8) = .{};
-                item.value.format(list.writer(arena_allocator)) catch |err| {
+                value.format(list.writer(arena_allocator)) catch |err| {
                     api.duckdb_function_set_error.?(info, @errorName(err).ptr);
                     return;
                 };
@@ -605,10 +626,7 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
                     T,
                     arena_allocator,
                     ip,
-                    .{
-                        .only = field_names.only(),
-                        .include_empty_values = false,
-                    },
+                    .{ .only = field_names.only() },
                 ) catch |err| {
                     api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
                     return;
@@ -711,10 +729,7 @@ fn lookupAnyCallback(
             maxminddb.any.Value,
             arena_allocator,
             ip,
-            .{
-                .only = field_names.only(),
-                .include_empty_values = false,
-            },
+            .{ .only = field_names.only() },
         ) catch |err| {
             api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
             return;

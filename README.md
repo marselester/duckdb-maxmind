@@ -127,7 +127,6 @@ Make sure the extension works by running a DuckDB interactive session.
 ```sh
 $ brew install duckdb
 $ zig build duckdb -Doptimize=ReleaseFast
-D SELECT mmdb_record('./GeoLite2-City.mmdb', '1.0.64.0', '');
 ```
 
 Run the lookup benchmark to catch regressions (1M random IPs against GeoLite2-City).
@@ -136,7 +135,29 @@ Run the lookup benchmark to catch regressions (1M random IPs against GeoLite2-Ci
 $ zig build benchmark_lookup -Doptimize=ReleaseFast
 ```
 
+You might need to update [duckdb.zig](./src/duckdb.zig)
+if there are breaking changes in
+[duckdb_extension.h](https://github.com/duckdb/extension-template-c/blob/main/duckdb_capi/duckdb_extension.h).
+
+```sh
+$ zig translate-c ./extension-template-c/duckdb_capi/duckdb_extension.h > src/duckdb.zig
+```
+
+Kudos to @habedi for making
+[template-duckdb-extension-zig](https://github.com/habedi/template-duckdb-extension-zig).
+
+## Benchmarks
+
 Here are reference results on Apple M2 Pro (DuckDB calls functions from different threads).
+
+### Lookup
+
+1M random IPv4 lookups in GeoLite2-City.
+
+| Type   | All fields | `"city"`   |
+|---     |---         |---         |
+| Struct | ~1,593,000 | ~2,182,000 |
+| JSON   | ~1,876,000 | ~2,556,000 |
 
 <details>
 
@@ -155,27 +176,27 @@ $ for i in $(seq 1 10); do
       2>&1 | grep 'Lookups Per Second'
   done
 
-Lookups Per Second: 1181048
-Lookups Per Second: 1375543
-Lookups Per Second: 1369311
-Lookups Per Second: 1369761
-Lookups Per Second: 1324712
-Lookups Per Second: 1338950
-Lookups Per Second: 1365158
-Lookups Per Second: 1361891
-Lookups Per Second: 1341626
-Lookups Per Second: 1346066
+Lookups Per Second: 1557657
+Lookups Per Second: 1601455
+Lookups Per Second: 1565941
+Lookups Per Second: 1621183
+Lookups Per Second: 1635503
+Lookups Per Second: 1581055
+Lookups Per Second: 1632303
+Lookups Per Second: 1597503
+Lookups Per Second: 1586549
+Lookups Per Second: 1547471
 ---
-Lookups Per Second: 1645663
-Lookups Per Second: 1615902
-Lookups Per Second: 1644466
-Lookups Per Second: 1524310
-Lookups Per Second: 1629483
-Lookups Per Second: 1640131
-Lookups Per Second: 1566966
-Lookups Per Second: 1628056
-Lookups Per Second: 1636196
-Lookups Per Second: 1386362
+Lookups Per Second: 2222843
+Lookups Per Second: 2158431
+Lookups Per Second: 2185641
+Lookups Per Second: 2214339
+Lookups Per Second: 2142214
+Lookups Per Second: 2136149
+Lookups Per Second: 2222944
+Lookups Per Second: 2190153
+Lookups Per Second: 2173703
+Lookups Per Second: 2170327
 ```
 
 </details>
@@ -197,38 +218,78 @@ $ for i in $(seq 1 10); do
       2>&1 | grep 'Lookups Per Second'
   done
 
-Lookups Per Second: 1474290
-Lookups Per Second: 1430456
-Lookups Per Second: 1495560
-Lookups Per Second: 1477165
-Lookups Per Second: 1201247
-Lookups Per Second: 1470980
-Lookups Per Second: 1493345
-Lookups Per Second: 1473481
-Lookups Per Second: 1491169
-Lookups Per Second: 1499607
+Lookups Per Second: 1874756
+Lookups Per Second: 1897470
+Lookups Per Second: 1870679
+Lookups Per Second: 1870546
+Lookups Per Second: 1861258
+Lookups Per Second: 1875950
+Lookups Per Second: 1872761
+Lookups Per Second: 1876697
+Lookups Per Second: 1879974
+Lookups Per Second: 1877297
 ---
-Lookups Per Second: 1723675
-Lookups Per Second: 1753231
-Lookups Per Second: 1674606
-Lookups Per Second: 1738747
-Lookups Per Second: 1751980
-Lookups Per Second: 1729041
-Lookups Per Second: 1741489
-Lookups Per Second: 1699169
-Lookups Per Second: 1706883
-Lookups Per Second: 1540820
+Lookups Per Second: 2591283
+Lookups Per Second: 2541957
+Lookups Per Second: 2546863
+Lookups Per Second: 2550550
+Lookups Per Second: 2536379
+Lookups Per Second: 2652563
+Lookups Per Second: 2543078
+Lookups Per Second: 2411626
+Lookups Per Second: 2606365
+Lookups Per Second: 2578813
 ```
 
 </details>
+
+### Scan
+
+Full GeoLite2-City scan (5.5M records).
+
+| Query                           | Time   | Decoded fields |
+|---                              |---     |---             |
+| `SELECT *`                      | ~9.65s | all            |
+| `SELECT network, city.names.en` | ~2.84s | city           |
+| `SELECT network`                | ~0.53s | none           |
+| `SELECT count(*)`               | ~0.44s | none           |
+
+```sh
+$ zig build duckdb -Doptimize=ReleaseFast
+```
 
 <details>
 
 <summary>SELECT * FROM read_mmdb('GeoLite2-City.mmdb')</summary>
 
 ```sql
-D SELECT * FROM read_mmdb('GeoLite2-City.mmdb');
-100% ▕██████████████████████████████████████▏ (00:00:09.63 elapsed)
+.timer on
+SELECT * FROM read_mmdb('GeoLite2-City.mmdb');
+Run Time (s): real 9.648 user 8.600152 sys 0.962778
+```
+
+</details>
+
+<details>
+
+<summary>SELECT network, city.names.en FROM read_mmdb('GeoLite2-City.mmdb')</summary>
+
+```sql
+.timer on
+SELECT network, city.names.en FROM read_mmdb('GeoLite2-City.mmdb');
+Run Time (s): real 2.844 user 2.815992 sys 0.026339
+```
+
+</details>
+
+<details>
+
+<summary>SELECT network FROM read_mmdb('GeoLite2-City.mmdb')</summary>
+
+```sql
+.timer on
+SELECT network FROM read_mmdb('GeoLite2-City.mmdb');
+Run Time (s): real 0.526 user 0.494845 sys 0.029498
 ```
 
 </details>
@@ -238,8 +299,8 @@ D SELECT * FROM read_mmdb('GeoLite2-City.mmdb');
 <summary>SELECT count(*) FROM read_mmdb('GeoLite2-City.mmdb')</summary>
 
 ```sql
-D SELECT count(*) FROM read_mmdb('GeoLite2-City.mmdb');
-100% ▕██████████████████████████████████████▏ (00:00:02.39 elapsed)
+.timer on
+SELECT count(*) FROM read_mmdb('GeoLite2-City.mmdb');
 ┌────────────────┐
 │  count_star()  │
 │     int64      │
@@ -247,17 +308,7 @@ D SELECT count(*) FROM read_mmdb('GeoLite2-City.mmdb');
 │    5502351     │
 │ (5.50 million) │
 └────────────────┘
+Run Time (s): real 0.441 user 0.436056 sys 0.005379
 ```
 
 </details>
-
-You might need to update [duckdb.zig](./src/duckdb.zig)
-if there are breaking changes in
-[duckdb_extension.h](https://github.com/duckdb/extension-template-c/blob/main/duckdb_capi/duckdb_extension.h).
-
-```sh
-$ zig translate-c ./extension-template-c/duckdb_capi/duckdb_extension.h > src/duckdb.zig
-```
-
-Kudos to @habedi for making
-[template-duckdb-extension-zig](https://github.com/habedi/template-duckdb-extension-zig).
