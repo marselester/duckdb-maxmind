@@ -37,11 +37,11 @@ pub fn build(b: *std.Build) void {
     lib.install_name = extension_filename;
 
     // Add extension.c that handles DuckDB API integration.
-    lib.addCSourceFile(.{
+    root_module.addCSourceFile(.{
         .file = b.path("src/extension.c"),
         .flags = &.{"-std=c11"},
     });
-    lib.addIncludePath(b.path("extension-template-c/duckdb_capi"));
+    root_module.addIncludePath(b.path("extension-template-c/duckdb_capi"));
 
     lib.root_module.addCMacro("DUCKDB_EXTENSION_NAME", extension_name);
     lib.root_module.addCMacro("DUCKDB_BUILD_LOADABLE_EXTENSION", "1");

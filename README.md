@@ -156,8 +156,8 @@ Here are reference results on Apple M2 Pro (DuckDB calls functions from differen
 
 | Type   | All fields | `"city"`   |
 |---     |---         |---         |
-| Struct | ~1,593,000 | ~2,182,000 |
-| JSON   | ~1,876,000 | ~2,556,000 |
+| Struct | ~1,586,000 | ~2,381,000 |
+| JSON   | ~1,901,000 | ~2,732,000 |
 
 <details>
 
@@ -176,27 +176,27 @@ $ for i in $(seq 1 10); do
       2>&1 | grep 'Lookups Per Second'
   done
 
-Lookups Per Second: 1557657
-Lookups Per Second: 1601455
-Lookups Per Second: 1565941
-Lookups Per Second: 1621183
-Lookups Per Second: 1635503
-Lookups Per Second: 1581055
-Lookups Per Second: 1632303
-Lookups Per Second: 1597503
-Lookups Per Second: 1586549
-Lookups Per Second: 1547471
+Lookups Per Second: 1365479
+Lookups Per Second: 1589148
+Lookups Per Second: 1593742
+Lookups Per Second: 1566688
+Lookups Per Second: 1576086
+Lookups Per Second: 1581419
+Lookups Per Second: 1548927
+Lookups Per Second: 1627899
+Lookups Per Second: 1575486
+Lookups Per Second: 1610941
 ---
-Lookups Per Second: 2222843
-Lookups Per Second: 2158431
-Lookups Per Second: 2185641
-Lookups Per Second: 2214339
-Lookups Per Second: 2142214
-Lookups Per Second: 2136149
-Lookups Per Second: 2222944
-Lookups Per Second: 2190153
-Lookups Per Second: 2173703
-Lookups Per Second: 2170327
+Lookups Per Second: 2386137
+Lookups Per Second: 2334267
+Lookups Per Second: 2380647
+Lookups Per Second: 2338713
+Lookups Per Second: 2368554
+Lookups Per Second: 2399424
+Lookups Per Second: 2448571
+Lookups Per Second: 2367247
+Lookups Per Second: 2411380
+Lookups Per Second: 2393152
 ```
 
 </details>
@@ -218,27 +218,27 @@ $ for i in $(seq 1 10); do
       2>&1 | grep 'Lookups Per Second'
   done
 
-Lookups Per Second: 1874756
-Lookups Per Second: 1897470
-Lookups Per Second: 1870679
-Lookups Per Second: 1870546
-Lookups Per Second: 1861258
-Lookups Per Second: 1875950
-Lookups Per Second: 1872761
-Lookups Per Second: 1876697
-Lookups Per Second: 1879974
-Lookups Per Second: 1877297
+Lookups Per Second: 1920708
+Lookups Per Second: 1866431
+Lookups Per Second: 1911372
+Lookups Per Second: 1949723
+Lookups Per Second: 1898885
+Lookups Per Second: 1867753
+Lookups Per Second: 1908925
+Lookups Per Second: 1883799
+Lookups Per Second: 1919288
+Lookups Per Second: 1904698
 ---
-Lookups Per Second: 2591283
-Lookups Per Second: 2541957
-Lookups Per Second: 2546863
-Lookups Per Second: 2550550
-Lookups Per Second: 2536379
-Lookups Per Second: 2652563
-Lookups Per Second: 2543078
-Lookups Per Second: 2411626
-Lookups Per Second: 2606365
-Lookups Per Second: 2578813
+Lookups Per Second: 2801892
+Lookups Per Second: 2729099
+Lookups Per Second: 2693449
+Lookups Per Second: 2795137
+Lookups Per Second: 2667880
+Lookups Per Second: 2643309
+Lookups Per Second: 2753942
+Lookups Per Second: 2683198
+Lookups Per Second: 2762833
+Lookups Per Second: 2760678
 ```
 
 </details>
@@ -247,12 +247,12 @@ Lookups Per Second: 2578813
 
 Full GeoLite2-City scan (5.5M records).
 
-| Query                           | Time   | Decoded fields |
-|---                              |---     |---             |
-| `SELECT *`                      | ~9.65s | all            |
-| `SELECT network, city.names.en` | ~2.84s | city           |
-| `SELECT network`                | ~0.53s | none           |
-| `SELECT count(*)`               | ~0.44s | none           |
+| Query                           | Time    | Decoded fields |
+|---                              |---      |---             |
+| `SELECT *`                      | ~13.53s | all            |
+| `SELECT network, city.names.en` | ~3.39s  | city           |
+| `SELECT network`                | ~0.56s  | none           |
+| `SELECT count(*)`               | ~0.50s  | none           |
 
 ```sh
 $ zig build duckdb -Doptimize=ReleaseFast
@@ -265,7 +265,7 @@ $ zig build duckdb -Doptimize=ReleaseFast
 ```sql
 .timer on
 SELECT * FROM read_mmdb('GeoLite2-City.mmdb');
-Run Time (s): real 9.648 user 8.600152 sys 0.962778
+Run Time (s): real 13.533 user 12.537950 sys 0.873628
 ```
 
 </details>
@@ -277,7 +277,7 @@ Run Time (s): real 9.648 user 8.600152 sys 0.962778
 ```sql
 .timer on
 SELECT network, city.names.en FROM read_mmdb('GeoLite2-City.mmdb');
-Run Time (s): real 2.844 user 2.815992 sys 0.026339
+Run Time (s): real 3.394 user 3.311568 sys 0.064082
 ```
 
 </details>
@@ -289,7 +289,7 @@ Run Time (s): real 2.844 user 2.815992 sys 0.026339
 ```sql
 .timer on
 SELECT network FROM read_mmdb('GeoLite2-City.mmdb');
-Run Time (s): real 0.526 user 0.494845 sys 0.029498
+Run Time (s): real 0.563 user 0.542995 sys 0.018816
 ```
 
 </details>
@@ -308,7 +308,7 @@ SELECT count(*) FROM read_mmdb('GeoLite2-City.mmdb');
 │    5502351     │
 │ (5.50 million) │
 └────────────────┘
-Run Time (s): real 0.441 user 0.436056 sys 0.005379
+Run Time (s): real 0.501 user 0.495474 sys 0.005803
 ```
 
 </details>

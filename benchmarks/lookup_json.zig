@@ -5,18 +5,19 @@ const default_db_path = "GeoLite2-City.mmdb";
 const default_num_lookups: u64 = 1_000_000;
 const default_fields = "";
 
-pub fn main() !void {
-    const alloc = std.heap.smp_allocator;
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
+    const io = init.io;
 
-    const args = try std.process.argsAlloc(alloc);
-    defer std.process.argsFree(alloc, args);
-
-    var db_path: []const u8 = default_db_path;
-    var num_lookups = default_num_lookups;
-    var fields: []const u8 = default_fields;
-    if (args.len > 1) db_path = args[1];
-    if (args.len > 2) num_lookups = try std.fmt.parseUnsigned(u64, args[2], 10);
-    if (args.len > 3) fields = args[3];
+    var args = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
+    defer args.deinit();
+    _ = args.skip();
+    const db_path = args.next() orelse default_db_path;
+    const num_lookups = if (args.next()) |arg|
+        try std.fmt.parseUnsigned(u64, arg, 10)
+    else
+        default_num_lookups;
+    const fields = args.next() orelse default_fields;
 
     std.debug.print("Benchmarking with:\n", .{});
     std.debug.print("  Database: {s}\n", .{db_path});
@@ -50,7 +51,7 @@ pub fn main() !void {
     // Generate a table of random IPs so DuckDB processes them in batches.
     std.debug.print("Generating random IPs...\n", .{});
     const create_q = try std.fmt.allocPrintSentinel(
-        alloc,
+        allocator,
         \\CREATE TABLE ips AS SELECT
         \\    (random()*255)::int || '.' ||
         \\    (random()*255)::int || '.' ||
@@ -61,21 +62,21 @@ pub fn main() !void {
         .{num_lookups},
         0,
     );
-    defer alloc.free(create_q);
+    defer allocator.free(create_q);
 
     try query(conn, create_q);
 
     // Run the lookup as a single batched query.
     const lookup_q = try std.fmt.allocPrintSentinel(
-        alloc,
+        allocator,
         "SELECT mmdb_record('{s}', ip, '{s}') FROM ips",
         .{ db_path, fields },
         0,
     );
-    defer alloc.free(lookup_q);
+    defer allocator.free(lookup_q);
 
     std.debug.print("Starting benchmark...\n", .{});
-    var timer = try std.time.Timer.start();
+    const timer_start = std.Io.Clock.Timestamp.now(io, .awake);
 
     var result: c.duckdb_result = undefined;
     if (c.duckdb_query(conn, lookup_q.ptr, &result) == c.DuckDBError) {
@@ -86,7 +87,7 @@ pub fn main() !void {
         return error.DuckDBQuery;
     }
 
-    const elapsed_ns = timer.read();
+    const elapsed_ns: u64 = @intCast(timer_start.untilNow(io).raw.nanoseconds);
     const row_count = c.duckdb_row_count(&result);
     c.duckdb_destroy_result(&result);
 
