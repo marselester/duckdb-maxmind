@@ -11,6 +11,32 @@ include extension-ci-tools/makefiles/c_api_extensions/base.Makefile
 
 ZIG_VERSION=0.15.2
 
+ZIG_TARGET=
+ifeq ($(DUCKDB_PLATFORM),linux_amd64)
+	ZIG_TARGET=-Dtarget=x86_64-linux-gnu
+endif
+ifeq ($(DUCKDB_PLATFORM),linux_arm64)
+	ZIG_TARGET=-Dtarget=aarch64-linux-gnu
+endif
+ifeq ($(DUCKDB_PLATFORM),linux_amd64_musl)
+	ZIG_TARGET=-Dtarget=x86_64-linux-musl
+endif
+ifeq ($(DUCKDB_PLATFORM),linux_arm64_musl)
+	ZIG_TARGET=-Dtarget=aarch64-linux-musl
+endif
+ifeq ($(DUCKDB_PLATFORM),osx_amd64)
+	ZIG_TARGET=-Dtarget=x86_64-macos
+endif
+ifeq ($(DUCKDB_PLATFORM),osx_arm64)
+	ZIG_TARGET=-Dtarget=aarch64-macos
+endif
+ifeq ($(DUCKDB_PLATFORM),windows_amd64)
+	ZIG_TARGET=-Dtarget=x86_64-windows
+endif
+ifeq ($(DUCKDB_PLATFORM),windows_arm64)
+	ZIG_TARGET=-Dtarget=aarch64-windows
+endif
+
 ifeq ($(OS),Windows_NT)
     ifeq ($(PROCESSOR_ARCHITECTURE),ARM64)
         ZIG_ARCH=aarch64
@@ -47,7 +73,7 @@ else
 endif
 
 build_extension_library_release: check_configure
-	$(ZIG) build -Doptimize=ReleaseFast -Dcpu=baseline
+	$(ZIG) build -Doptimize=ReleaseFast -Dcpu=baseline $(ZIG_TARGET)
 	mkdir -p $(EXTENSION_BUILD_PATH)/release/extension/$(EXTENSION_NAME)
 	cp zig-out/lib/$(EXTENSION_FILENAME) $(EXTENSION_BUILD_PATH)/release/$(EXTENSION_FILENAME)
 	cp zig-out/lib/$(EXTENSION_FILENAME) $(EXTENSION_BUILD_PATH)/release/extension/$(EXTENSION_NAME)/$(EXTENSION_FILENAME)
