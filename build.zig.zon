@@ -4,8 +4,8 @@
     .fingerprint = 0x3637936961daa956,
     .dependencies = .{
         .maxminddb = .{
-            .url = "git+https://github.com/marselester/maxminddb.zig?ref=v0.7.0#a560f532a21a8078134127ad3569a24809f7150c",
-            .hash = "maxminddb-0.7.0-HBInuo0FAgCPL5mrTwCQDoLrWb_eVRYvbj9oTaow1exC",
+            .url = "git+https://github.com/marselester/maxminddb.zig?ref=master#79030a42c936d53789c642a1d8e9ae464d5a15e4",
+            .hash = "maxminddb-0.7.0-HBInukr3AQDBNyN4yll4kqDlKHA0to6MVtE0ufxq18Hw",
         },
     },
     .paths = .{

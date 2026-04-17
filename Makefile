@@ -9,7 +9,7 @@ EXTENSION_NAME=maxmind
 
 include extension-ci-tools/makefiles/c_api_extensions/base.Makefile
 
-ZIG_VERSION=0.15.2
+ZIG_VERSION=0.16.0
 
 ZIG_TARGET=
 ifeq ($(DUCKDB_PLATFORM),linux_amd64)
@@ -38,11 +38,10 @@ ifeq ($(DUCKDB_PLATFORM),windows_arm64)
 endif
 
 ifeq ($(OS),Windows_NT)
-    ifeq ($(PROCESSOR_ARCHITECTURE),ARM64)
-        ZIG_ARCH=aarch64
-    else
-        ZIG_ARCH=x86_64
-    endif
+    # The zig 0.16 aarch64-windows binary is broken,
+    # see https://codeberg.org/ziglang/zig/issues/31865.
+    # x86_64 zig works on ARM via Windows emulation.
+    ZIG_ARCH=x86_64
     ZIG_OS=windows
 else
     ZIG_ARCH=$(shell uname -m | sed 's/arm64/aarch64/')

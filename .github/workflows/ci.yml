@@ -2,6 +2,10 @@ name: CI
 
 on: [push]
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   test:
     strategy:
@@ -15,10 +19,20 @@ jobs:
           - os: windows-latest
 
     runs-on: ${{ matrix.os }}
-
     steps:
       - uses: actions/checkout@v6
+      # The zig 0.16 aarch64-windows binary and LLVM libs are broken,
+      # see https://codeberg.org/ziglang/zig/issues/31865.
+      # As a workaround x86_64 Zig is used via Windows ARM emulation.
       - uses: mlugg/setup-zig@v2
+        if: matrix.os != 'windows-11-arm'
+      - name: Setup Zig
+        if: matrix.os == 'windows-11-arm'
+        run: |
+          curl -fsSLo zig.zip https://ziglang.org/download/0.16.0/zig-x86_64-windows-0.16.0.zip
+          unzip -q zig.zip -d zig-sdk
+          echo "$PWD/zig-sdk/zig-x86_64-windows-0.16.0" >> $GITHUB_PATH
+          echo "DUCKDB_PLATFORM=windows_arm64" >> $GITHUB_ENV
       - name: Install Make
         if: runner.os == 'Windows'
         run: choco install make
@@ -61,8 +75,41 @@ jobs:
           name: ${{ matrix.artifact }}
           path: zig-out/lib/maxmind.duckdb_extension
 
-  deploy:
+  verify:
     needs: build
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-24.04-arm
+            artifact: duckdb_maxmind_linux_arm64
+          - os: ubuntu-latest
+            artifact: duckdb_maxmind_linux_amd64
+          - os: macos-latest
+            artifact: duckdb_maxmind_osx_arm64
+          - os: macos-15-intel
+            artifact: duckdb_maxmind_osx_amd64
+          - os: windows-11-arm
+            artifact: duckdb_maxmind_windows_arm64
+          - os: windows-latest
+            artifact: duckdb_maxmind_windows_amd64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+      - name: Verify extension loads
+        run: |
+          python -m venv .venv
+          source .venv/bin/activate 2>/dev/null || source .venv/Scripts/activate
+          pip install duckdb
+          python << 'EOF'
+          import duckdb
+          db = duckdb.connect(config={"allow_unsigned_extensions": "true"})
+          db.execute("LOAD './maxmind.duckdb_extension'")
+          EOF
+
+  deploy:
+    needs: verify
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
