@@ -476,6 +476,100 @@ fn scanJSON(info: c.duckdb_function_info, output: c.duckdb_data_chunk) void {
     api.duckdb_data_chunk_set_size.?(output, i);
 }
 
+// ScalarState holds a Reader and Cache that persist across batch calls via threadlocal storage.
+// Each DuckDB thread gets its own state, avoiding synchronization while keeping the mapped file
+// and decoded records cached across batches.
+//
+// The cache key is the entry's data pointer.
+// The requested fields are not part of the key, so ensureFields() resets the cache
+// when fields change to avoid returning stale, partial records.
+//
+// Threadlocal state is not cleaned up on thread exit.
+// DuckDB reuses its thread pool, so in practice the state lives for the process lifetime.
+fn ScalarState(comptime T: type) type {
+    return struct {
+        db: maxminddb.Reader = undefined,
+        cache: maxminddb.Cache(T) = undefined,
+        path: ?[:0]u8 = null,
+        fields: ?[:0]u8 = null,
+        // Inode and mtime of the opened file, used to detect file replacement.
+        // When the MMDB file is updated, the new file gets a new inode
+        // even though the path is the same.
+        // Checking mtime also catches in-place overwrites (same inode, new content).
+        file_inode: std.Io.File.INode = 0,
+        file_mtime: i96 = 0,
+
+        const Self = @This();
+        const cache_size = 256;
+
+        /// Opens the MMDB database, reusing an existing Reader if the path
+        /// hasn't changed and the file hasn't been replaced on disk.
+        /// When the path or file identity (inode/mtime) changes, closes the old Reader and
+        /// resets both cache and fields — the caller must call ensureFields()
+        /// after ensureOpen() to re-establish the fields invariant.
+        fn ensureOpen(self: *Self, new_path: []const u8) !void {
+            const inode, const mtime = statFile(new_path);
+
+            if (self.path) |old_path| {
+                const is_same_path = std.mem.eql(u8, old_path, new_path);
+                const is_file_changed = inode != self.file_inode or mtime != self.file_mtime;
+                if (is_same_path and !is_file_changed) {
+                    return;
+                }
+
+                self.cache.deinit();
+                self.db.close();
+                allocator.free(old_path);
+                self.path = null;
+
+                if (self.fields) |f| {
+                    allocator.free(f);
+                    self.fields = null;
+                }
+            }
+
+            var db = try maxminddb.Reader.mmap(allocator, io, new_path, .{});
+            errdefer db.close();
+
+            var cache = try maxminddb.Cache(T).init(allocator, .{ .size = cache_size });
+            errdefer cache.deinit();
+
+            const path = try allocator.dupeZ(u8, new_path);
+
+            self.db = db;
+            self.cache = cache;
+            self.path = path;
+
+            self.file_inode = inode;
+            self.file_mtime = mtime;
+        }
+
+        fn statFile(path: []const u8) struct { std.Io.File.INode, i96 } {
+            const stat = std.Io.Dir.cwd().statFile(io, path, .{}) catch {
+                return .{ 0, 0 };
+            };
+            return .{ stat.inode, stat.mtime.nanoseconds };
+        }
+
+        /// Resets the cache if the fields string changed since the last call.
+        /// On first call (fields=null), just stores the string without resetting the cache.
+        fn ensureFields(self: *Self, fields_str: []const u8) !void {
+            if (self.fields) |f| {
+                if (std.mem.eql(u8, f, fields_str)) {
+                    return;
+                }
+
+                self.cache.reset();
+
+                allocator.free(f);
+                self.fields = null;
+            }
+
+            self.fields = try allocator.dupeZ(u8, fields_str);
+        }
+    };
+}
+
 // Creates a flat struct type that prepends a network field to db record fields.
 fn LookupResult(comptime T: type) type {
     const record_fields = std.meta.fields(T);
@@ -535,7 +629,7 @@ pub export fn register_lookup_functions(conn: c.duckdb_connection) callconv(.c) 
 
     api.duckdb_scalar_function_set_return_type.?(f, varchar_type);
 
-    api.duckdb_scalar_function_set_function.?(f, lookupAnyCallback);
+    api.duckdb_scalar_function_set_function.?(f, LookupAny.callback);
 
     if (api.duckdb_register_scalar_function.?(conn, f) == c.DuckDBError) {
         return c.DuckDBError;
@@ -548,6 +642,9 @@ pub export fn register_lookup_functions(conn: c.duckdb_connection) callconv(.c) 
 fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
     return struct {
         const R = LookupResult(T);
+
+        // Each thread gets an independent copy, no synchronization needed.
+        threadlocal var state: ScalarState(T) = .{};
 
         fn callback(
             info: c.duckdb_function_info,
@@ -580,34 +677,37 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
                 return;
             };
 
-            // We should re-open the Reader only when the path changes.
-            var current_path: []const u8 = duckifier.readString(&path_data[0]);
-
-            var db = maxminddb.Reader.mmap(allocator, io, current_path, .{}) catch |err| {
+            state.ensureOpen(duckifier.readString(&path_data[0])) catch |err| {
                 api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
                 return;
             };
-            defer db.close();
+            state.ensureFields(fields_str) catch |err| {
+                api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
+                return;
+            };
 
-            var arena = std.heap.ArenaAllocator.init(allocator);
-            defer arena.deinit();
-            const arena_allocator = arena.allocator();
+            // Pre-resolve output struct children once before the row loop.
+            // This eliminates per-row duckdb_struct_vector_get_child calls.
+            const num_children = std.meta.fields(R).len;
+            var child_vecs: [num_children]c.duckdb_vector = undefined;
+            inline for (0..num_children) |idx| {
+                child_vecs[idx] = api.duckdb_struct_vector_get_child.?(output, idx);
+            }
 
             var i: u64 = 0;
             var buf: [64]u8 = undefined;
             while (i < input_size) : (i += 1) {
                 const row_path = duckifier.readString(&path_data[i]);
-
-                if (!std.mem.eql(u8, row_path, current_path)) {
-                    const new_db = maxminddb.Reader.mmap(allocator, io, row_path, .{}) catch |err| {
+                // Re-open if the path column changes mid-batch.
+                if (!std.mem.eql(u8, row_path, state.path.?)) {
+                    state.ensureOpen(row_path) catch |err| {
                         api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
                         return;
                     };
-
-                    db.close();
-                    db = new_db;
-
-                    current_path = row_path;
+                    state.ensureFields(fields_str) catch |err| {
+                        api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
+                        return;
+                    };
                 }
 
                 const ip_str = duckifier.readString(&ip_data[i]);
@@ -617,14 +717,9 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
                     continue;
                 };
 
-                _ = arena.reset(.retain_capacity);
-
-                const result = db.lookup(
-                    T,
-                    arena_allocator,
-                    ip,
-                    .{ .only = field_names.only() },
-                ) catch |err| {
+                // find() does tree traversal only (no decoding).
+                // Returns the data pointer and the matched network.
+                const entry = state.db.find(ip, .{}) catch |err| {
                     api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
                     return;
                 } orelse {
@@ -632,17 +727,28 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
                     continue;
                 };
 
-                const net_str = std.fmt.bufPrint(&buf, "{f}", .{result.network}) catch |err| {
+                // cache.decode() returns the cached value on hit (keyed by data pointer),
+                // or decodes from the MMDB binary on miss and caches the result.
+                const value = state.cache.decode(
+                    &state.db,
+                    entry,
+                    .{ .only = field_names.only() },
+                ) catch |err| {
                     api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
                     return;
                 };
 
-                var r: R = undefined;
-                r.network = net_str;
-                inline for (std.meta.fields(T)) |f| {
-                    @field(r, f.name) = @field(result.value, f.name);
+                const net_str = std.fmt.bufPrint(&buf, "{f}", .{entry.network}) catch |err| {
+                    api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
+                    return;
+                };
+
+                // Write directly to pre-resolved child vectors (child_vecs[0] is network),
+                // skipping the top-level struct dispatch in writeValue.
+                api.duckdb_vector_assign_string_element_len.?(child_vecs[0], i, net_str.ptr, net_str.len);
+                inline for (std.meta.fields(T), 0..) |f, idx| {
+                    duckifier.writeValue(f.type, @field(value, f.name), child_vecs[idx + 1], i);
                 }
-                duckifier.writeValue(R, r, output, i);
             }
         }
     }.callback;
@@ -650,109 +756,113 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
 
 // Scalar function callback for mmdb_record(path, ip, fields).
 // Decodes any MMDB record as any.Value and returns JSON as VARCHAR.
-fn lookupAnyCallback(
-    info: c.duckdb_function_info,
-    input: c.duckdb_data_chunk,
-    output: c.duckdb_vector,
-) callconv(.c) void {
-    const input_size = api.duckdb_data_chunk_get_size.?(input);
-    if (input_size == 0) {
-        return;
-    }
+// Same threadlocal caching as lookupCallback, but outputs a JSON string
+// instead of a typed struct. Uses a fixed buffer for JSON formatting,
+// falling back to arena allocation for records that exceed 4KB.
+const LookupAny = struct {
+    threadlocal var state: ScalarState(maxminddb.any.Value) = .{};
 
-    const path_vec = api.duckdb_data_chunk_get_vector.?(input, 0);
-    const ip_vec = api.duckdb_data_chunk_get_vector.?(input, 1);
-    const fields_vec = api.duckdb_data_chunk_get_vector.?(input, 2);
-
-    const path_data: [*]c.duckdb_string_t = @ptrCast(@alignCast(
-        api.duckdb_vector_get_data.?(path_vec),
-    ));
-    const ip_data: [*]c.duckdb_string_t = @ptrCast(@alignCast(
-        api.duckdb_vector_get_data.?(ip_vec),
-    ));
-    const fields_data: [*]c.duckdb_string_t = @ptrCast(@alignCast(
-        api.duckdb_vector_get_data.?(fields_vec),
-    ));
-
-    // Fields are read from row 0 (constant across the batch).
-    const fields_str = duckifier.readString(&fields_data[0]);
-    const field_names = maxminddb.Fields(max_mmdb_fields).parse(fields_str, ',') catch |err| {
-        api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
-        return;
-    };
-
-    // We should re-open the Reader only when the path changes.
-    var current_path: []const u8 = duckifier.readString(&path_data[0]);
-
-    var db = maxminddb.Reader.mmap(allocator, io, current_path, .{}) catch |err| {
-        api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
-        return;
-    };
-    defer db.close();
-
-    var buf: [json_buf_size]u8 = undefined;
-    var w = std.Io.Writer.fixed(&buf);
-
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-    const arena_allocator = arena.allocator();
-
-    var i: u64 = 0;
-    while (i < input_size) : (i += 1) {
-        const row_path = duckifier.readString(&path_data[i]);
-
-        if (!std.mem.eql(u8, row_path, current_path)) {
-            const new_db = maxminddb.Reader.mmap(allocator, io, row_path, .{}) catch |err| {
-                api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
-                return;
-            };
-
-            db.close();
-            db = new_db;
-
-            current_path = row_path;
+    fn callback(
+        info: c.duckdb_function_info,
+        input: c.duckdb_data_chunk,
+        output: c.duckdb_vector,
+    ) callconv(.c) void {
+        const input_size = api.duckdb_data_chunk_get_size.?(input);
+        if (input_size == 0) {
+            return;
         }
 
-        const ip_str = duckifier.readString(&ip_data[i]);
+        const path_vec = api.duckdb_data_chunk_get_vector.?(input, 0);
+        const ip_vec = api.duckdb_data_chunk_get_vector.?(input, 1);
+        const fields_vec = api.duckdb_data_chunk_get_vector.?(input, 2);
 
-        const ip = std.Io.net.IpAddress.parse(ip_str, 0) catch {
-            duckifier.writeNull([]const u8, output, i);
-            continue;
-        };
+        const path_data: [*]c.duckdb_string_t = @ptrCast(@alignCast(
+            api.duckdb_vector_get_data.?(path_vec),
+        ));
+        const ip_data: [*]c.duckdb_string_t = @ptrCast(@alignCast(
+            api.duckdb_vector_get_data.?(ip_vec),
+        ));
+        const fields_data: [*]c.duckdb_string_t = @ptrCast(@alignCast(
+            api.duckdb_vector_get_data.?(fields_vec),
+        ));
 
-        _ = arena.reset(.retain_capacity);
-
-        const result = db.lookup(
-            maxminddb.any.Value,
-            arena_allocator,
-            ip,
-            .{ .only = field_names.only() },
-        ) catch |err| {
+        // Fields are read from row 0 (constant across the batch).
+        const fields_str = duckifier.readString(&fields_data[0]);
+        const field_names = maxminddb.Fields(max_mmdb_fields).parse(fields_str, ',') catch |err| {
             api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
             return;
-        } orelse {
-            duckifier.writeNull([]const u8, output, i);
-            continue;
         };
 
-        // Format the record as JSON into a buffer, falling back to heap allocation
-        // via the arena for records that exceed the buffer size.
-        w.end = 0;
-        if (result.value.format(&w)) {
-            api.duckdb_vector_assign_string_element_len.?(output, i, w.buffer.ptr, w.end);
-        } else |_| {
-            var aw = std.Io.Writer.Allocating.init(arena_allocator);
-            result.value.format(&aw.writer) catch |err| {
+        state.ensureOpen(duckifier.readString(&path_data[0])) catch |err| {
+            api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
+            return;
+        };
+        state.ensureFields(fields_str) catch |err| {
+            api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
+            return;
+        };
+
+        var buf: [json_buf_size]u8 = undefined;
+        var w = std.Io.Writer.fixed(&buf);
+
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const arena_allocator = arena.allocator();
+
+        var i: u64 = 0;
+        while (i < input_size) : (i += 1) {
+            const row_path = duckifier.readString(&path_data[i]);
+            if (!std.mem.eql(u8, row_path, state.path.?)) {
+                state.ensureOpen(row_path) catch |err| {
+                    api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
+                    return;
+                };
+                state.ensureFields(fields_str) catch |err| {
+                    api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
+                    return;
+                };
+            }
+
+            const ip_str = duckifier.readString(&ip_data[i]);
+
+            const ip = std.Io.net.IpAddress.parse(ip_str, 0) catch {
+                duckifier.writeNull([]const u8, output, i);
+                continue;
+            };
+
+            const entry = state.db.find(ip, .{}) catch |err| {
+                api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
+                return;
+            } orelse {
+                duckifier.writeNull([]const u8, output, i);
+                continue;
+            };
+
+            const value = state.cache.decode(
+                &state.db,
+                entry,
+                .{ .only = field_names.only() },
+            ) catch |err| {
                 api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
                 return;
             };
 
-            api.duckdb_vector_assign_string_element_len.?(
-                output,
-                i,
-                aw.writer.buffer.ptr,
-                aw.writer.end,
-            );
+            // Format the record as JSON into a buffer, falling back to heap allocation
+            // via the arena for records that exceed the buffer size.
+            w.end = 0;
+            if (value.format(&w)) {
+                api.duckdb_vector_assign_string_element_len.?(output, i, w.buffer.ptr, w.end);
+            } else |_| {
+                var aw = std.Io.Writer.Allocating.init(arena_allocator);
+                value.format(&aw.writer) catch |err| {
+                    api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
+                    return;
+                };
+
+                api.duckdb_vector_assign_string_element_len.?(output, i, aw.writer.buffer.ptr, aw.writer.end);
+            }
+
+            _ = arena.reset(.retain_capacity);
         }
     }
-}
+};
