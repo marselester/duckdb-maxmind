@@ -501,6 +501,7 @@ fn ScalarState(comptime T: type) type {
 
         const Self = @This();
         const cache_size = 256;
+        const ipv4_index_bits = 16;
 
         /// Opens the MMDB database, reusing an existing Reader if the path
         /// hasn't changed and the file hasn't been replaced on disk.
@@ -528,7 +529,12 @@ fn ScalarState(comptime T: type) type {
                 }
             }
 
-            var db = try maxminddb.Reader.mmap(allocator, io, new_path, .{});
+            var db = try maxminddb.Reader.mmap(
+                allocator,
+                io,
+                new_path,
+                .{ .ipv4_index_first_n_bits = ipv4_index_bits },
+            );
             errdefer db.close();
 
             var cache = try maxminddb.Cache(T).init(allocator, .{ .size = cache_size });
