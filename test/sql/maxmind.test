@@ -218,6 +218,21 @@ SELECT geoip_user_count('./test-data/test-data/GeoIP2-User-Count-Test.mmdb', '1.
 ----
 4
 
+query I
+SELECT geoip_regions('./test-data/test-data/GeoIP-Regions-Test.mmdb', '214.78.0.0', '').subdivisions[1].iso_code;
+----
+CA
+
+query I
+SELECT len(geoip_regions('./test-data/test-data/GeoIP-Regions-Test.mmdb', '214.78.0.0', 'alternate_locations').alternate_locations);
+----
+4
+
+query I
+SELECT geoip_residential_proxy('./test-data/test-data/GeoIP-Residential-Proxy-Test.mmdb', '1.2.0.4', '').provider_name;
+----
+quickshift
+
 # Typed scalar: path change within a batch.
 
 query II

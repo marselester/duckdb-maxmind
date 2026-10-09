@@ -28,7 +28,7 @@ pub fn createDuckDBType(comptime T: type) c.duckdb_logical_type {
 
     switch (@typeInfo(T)) {
         .optional => |opt| return createDuckDBType(opt.child),
-        .@"struct" => {
+        .@"struct" => |info| {
             // MAP
             if (@hasDecl(T, "map_marker")) {
                 const key_type = api.duckdb_create_logical_type.?(c.DUCKDB_TYPE_VARCHAR);
@@ -42,7 +42,7 @@ pub fn createDuckDBType(comptime T: type) c.duckdb_logical_type {
 
             // LIST
             if (@hasDecl(T, "array_marker")) {
-                const ChildType = std.meta.Elem(std.meta.fieldInfo(T, .items).type);
+                const ChildType = std.meta.Elem(@FieldType(T, "items"));
                 const elem_type = createDuckDBType(ChildType);
                 defer api.duckdb_destroy_logical_type.?(@constCast(&elem_type));
 
@@ -50,12 +50,12 @@ pub fn createDuckDBType(comptime T: type) c.duckdb_logical_type {
             }
 
             // STRUCT
-            const n = std.meta.fields(T).len;
+            const n = info.field_names.len;
             var member_types: [n]c.duckdb_logical_type = undefined;
             var member_names: [n][*c]const u8 = undefined;
-            inline for (std.meta.fields(T), 0..) |f, idx| {
-                member_types[idx] = createDuckDBType(f.type);
-                member_names[idx] = @ptrCast(f.name.ptr);
+            inline for (info.field_names, info.field_types, 0..) |name, FT, idx| {
+                member_types[idx] = createDuckDBType(FT);
+                member_names[idx] = @ptrCast(name.ptr);
             }
 
             const result = api.duckdb_create_struct_type.?(
@@ -97,7 +97,7 @@ pub fn writeValue(comptime T: type, value: T, vector: c.duckdb_vector, row: u64)
                 writeNull(opt.child, vector, row);
             }
         },
-        .@"struct" => {
+        .@"struct" => |info| {
             // MAP
             if (@hasDecl(T, "map_marker")) {
                 writeMap(value, vector, row);
@@ -111,9 +111,9 @@ pub fn writeValue(comptime T: type, value: T, vector: c.duckdb_vector, row: u64)
             }
 
             // STRUCT
-            inline for (std.meta.fields(T), 0..) |f, idx| {
+            inline for (info.field_names, info.field_types, 0..) |name, FT, idx| {
                 const child_vec = api.duckdb_struct_vector_get_child.?(vector, idx);
-                writeValue(f.type, @field(value, f.name), child_vec, row);
+                writeValue(FT, @field(value, name), child_vec, row);
             }
         },
         else => @compileError("unsupported type: " ++ @typeName(T)),
@@ -136,7 +136,7 @@ pub fn writeNull(comptime T: type, vector: c.duckdb_vector, row: u64) void {
 
     switch (@typeInfo(T)) {
         .optional => |opt| writeNull(opt.child, vector, row),
-        .@"struct" => {
+        .@"struct" => |info| {
             // MAP or LIST: write an empty list entry so the offset/length aren't garbage.
             if (@hasDecl(T, "map_marker") or @hasDecl(T, "array_marker")) {
                 const current_size = api.duckdb_list_vector_get_size.?(vector);
@@ -152,9 +152,9 @@ pub fn writeNull(comptime T: type, vector: c.duckdb_vector, row: u64) void {
             }
 
             // STRUCT: recurse into all children.
-            inline for (std.meta.fields(T), 0..) |f, idx| {
+            inline for (info.field_types, 0..) |FT, idx| {
                 const child_vec = api.duckdb_struct_vector_get_child.?(vector, idx);
-                writeNull(f.type, child_vec, row);
+                writeNull(FT, child_vec, row);
             }
         },
         else => {},
@@ -169,9 +169,10 @@ pub fn writeRecordField(
     row: u64,
     field_idx: u64,
 ) void {
-    inline for (std.meta.fields(T), 0..) |f, idx| {
+    const info = @typeInfo(T).@"struct";
+    inline for (info.field_names, info.field_types, 0..) |name, FT, idx| {
         if (idx == field_idx) {
-            writeValue(f.type, @field(record, f.name), vector, row);
+            writeValue(FT, @field(record, name), vector, row);
             return;
         }
     }
@@ -209,7 +210,7 @@ fn writeMap(map: anytype, map_vec: c.duckdb_vector, row: u64) void {
 
 /// Writes a DuckDB LIST vector.
 fn writeList(comptime T: type, list: T, list_vec: c.duckdb_vector, row: u64) void {
-    const Elem = std.meta.Elem(std.meta.fieldInfo(T, .items).type);
+    const Elem = std.meta.Elem(@FieldType(T, "items"));
     const current_size = api.duckdb_list_vector_get_size.?(list_vec);
     const count: u64 = list.items.len;
     const new_size = current_size + count;

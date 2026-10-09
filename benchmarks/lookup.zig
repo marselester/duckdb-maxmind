@@ -1,5 +1,5 @@
 const std = @import("std");
-const c = @cImport(@cInclude("duckdb.h"));
+const c = @import("duckdb");
 
 const default_db_path = "GeoLite2-City.mmdb";
 const default_num_lookups: u64 = 1_000_000;
@@ -50,8 +50,7 @@ pub fn main(init: std.process.Init) !void {
 
     // Generate a table of random IPs so DuckDB processes them in batches.
     std.debug.print("Generating random IPs...\n", .{});
-    const create_q = try std.fmt.allocPrintSentinel(
-        allocator,
+    const create_q = try allocator.printSentinel(
         \\CREATE TABLE ips AS SELECT
         \\    (random()*255)::int || '.' ||
         \\    (random()*255)::int || '.' ||
@@ -67,8 +66,7 @@ pub fn main(init: std.process.Init) !void {
     try query(conn, create_q);
 
     // Run the lookup as a single batched query.
-    const lookup_q = try std.fmt.allocPrintSentinel(
-        allocator,
+    const lookup_q = try allocator.printSentinel(
         "SELECT geolite_city('{s}', ip, '{s}') FROM ips",
         .{ db_path, fields },
         0,

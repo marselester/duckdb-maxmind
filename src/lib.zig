@@ -7,7 +7,12 @@ extern const duckdb_ext_api: c.duckdb_ext_api_v1;
 const api = &duckdb_ext_api;
 
 const allocator = std.heap.c_allocator;
-const io: std.Io = std.Io.Threaded.global_single_threaded.io();
+var io_instance: std.Io.Threaded = init: {
+    var t: std.Io.Threaded = .init_single_threaded;
+    t.allocator = allocator;
+    break :init t;
+};
+const io: std.Io = io_instance.io();
 
 // Real MMDB databases have at most ~15 top-level fields.
 const max_mmdb_fields = 32;
@@ -140,10 +145,11 @@ fn bindCallback(info: c.duckdb_bind_info) callconv(.c) void {
         switch (db_type.?) {
             inline else => |dt| {
                 const T = dt.recordType();
-                inline for (std.meta.fields(T)) |f| {
-                    const col_type = duckifier.createDuckDBType(f.type);
+                const record_info = @typeInfo(T).@"struct";
+                inline for (record_info.field_names, record_info.field_types) |name, FT| {
+                    const col_type = duckifier.createDuckDBType(FT);
                     defer api.duckdb_destroy_logical_type.?(@constCast(&col_type));
-                    api.duckdb_bind_add_result_column.?(info, f.name, col_type);
+                    api.duckdb_bind_add_result_column.?(info, name, col_type);
                 }
             },
         }
@@ -161,7 +167,7 @@ fn bindCallback(info: c.duckdb_bind_info) callconv(.c) void {
         return;
     };
 
-    bind_data.path = allocator.dupeZ(u8, path) catch {
+    bind_data.path = allocator.dupeSentinel(u8, path, 0) catch {
         api.duckdb_bind_set_error.?(info, "allocate db path");
         allocator.destroy(bind_data);
         return;
@@ -179,13 +185,13 @@ fn bindCallback(info: c.duckdb_bind_info) callconv(.c) void {
 // It tracks whether all rows have been emitted so the scan knows when to stop.
 fn InitData(comptime T: type) type {
     const is_json = T == maxminddb.any.Value;
-    const num_fields: usize = if (is_json) 1 else std.meta.fields(T).len;
+    const num_fields: usize = if (is_json) 1 else @typeInfo(T).@"struct".field_names.len;
     const max_cols = num_fields + 1; // network + content columns
 
     return struct {
         db: maxminddb.Reader,
         cache: maxminddb.Cache(T),
-        it: maxminddb.EntryIterator,
+        it: maxminddb.NetworkIterator,
         decode_options: maxminddb.Reader.DecodeOptions,
         // Maps output chunk vector position to original column index.
         projected_cols: [max_cols]c.idx_t,
@@ -258,9 +264,9 @@ fn initTyped(comptime T: type, info: c.duckdb_init_info, bind_data: *BindData) v
         }
 
         if (!is_json and col_idx > 0) {
-            inline for (std.meta.fields(T), 0..) |f, idx| {
+            inline for (@typeInfo(T).@"struct".field_names, 0..) |name, idx| {
                 if (idx == col_idx - 1) {
-                    init_data.field_names.append(f.name) catch unreachable;
+                    init_data.field_names.append(name) catch unreachable;
                 }
             }
         }
@@ -282,7 +288,7 @@ fn initTyped(comptime T: type, info: c.duckdb_init_info, bind_data: *BindData) v
             init_data.field_names.items[0..init_data.field_names.len],
     };
 
-    init_data.it = init_data.db.entries(bind_data.network, .{
+    init_data.it = init_data.db.networks(bind_data.network, .{
         .include_empty_values = bind_data.include_empty,
     }) catch |err| {
         api.duckdb_init_set_error.?(info, @errorName(err).ptr);
@@ -318,7 +324,7 @@ fn scanCallback(info: c.duckdb_function_info, output: c.duckdb_data_chunk) callc
 
 fn scanTyped(comptime T: type, info: c.duckdb_function_info, output: c.duckdb_data_chunk) void {
     const D = InitData(T);
-    const max_cols = std.meta.fields(T).len + 1;
+    const max_cols = @typeInfo(T).@"struct".field_names.len + 1;
 
     const init_ptr = api.duckdb_function_get_init_data.?(info);
     const init_data: *D = @ptrCast(@alignCast(init_ptr));
@@ -350,7 +356,7 @@ fn scanTyped(comptime T: type, info: c.duckdb_function_info, output: c.duckdb_da
     var buf: [64]u8 = undefined;
     const chunk_size: u64 = api.duckdb_vector_size.?();
     while (i < chunk_size) : (i += 1) {
-        const entry = init_data.it.next() catch |err| {
+        const result = init_data.it.next() catch |err| {
             api.duckdb_function_set_error.?(info, @errorName(err).ptr);
             return;
         } orelse {
@@ -359,7 +365,7 @@ fn scanTyped(comptime T: type, info: c.duckdb_function_info, output: c.duckdb_da
         };
 
         if (net_vec) |vec| {
-            const net_str = std.fmt.bufPrint(&buf, "{f}", .{entry.network}) catch |err| {
+            const net_str = std.mem.print(&buf, "{f}", .{result.network}) catch |err| {
                 api.duckdb_function_set_error.?(info, @errorName(err).ptr);
                 return;
             };
@@ -371,7 +377,7 @@ fn scanTyped(comptime T: type, info: c.duckdb_function_info, output: c.duckdb_da
         if (num_fields > 0) {
             const value = init_data.cache.decode(
                 &init_data.db,
-                entry,
+                result,
                 init_data.decode_options,
             ) catch |err| {
                 api.duckdb_function_set_error.?(info, @errorName(err).ptr);
@@ -423,7 +429,7 @@ fn scanJSON(info: c.duckdb_function_info, output: c.duckdb_data_chunk) void {
     var i: u64 = 0;
     const chunk_size: u64 = api.duckdb_vector_size.?();
     while (i < chunk_size) : (i += 1) {
-        const entry = init_data.it.next() catch |err| {
+        const result = init_data.it.next() catch |err| {
             api.duckdb_function_set_error.?(info, @errorName(err).ptr);
             return;
         } orelse {
@@ -432,7 +438,7 @@ fn scanJSON(info: c.duckdb_function_info, output: c.duckdb_data_chunk) void {
         };
 
         if (net_vec) |vec| {
-            const net_str = std.fmt.bufPrint(&net_buf, "{f}", .{entry.network}) catch |err| {
+            const net_str = std.mem.print(&net_buf, "{f}", .{result.network}) catch |err| {
                 api.duckdb_function_set_error.?(info, @errorName(err).ptr);
                 return;
             };
@@ -444,7 +450,7 @@ fn scanJSON(info: c.duckdb_function_info, output: c.duckdb_data_chunk) void {
         if (rec_vec) |vec| {
             const value = init_data.cache.decode(
                 &init_data.db,
-                entry,
+                result,
                 init_data.decode_options,
             ) catch |err| {
                 api.duckdb_function_set_error.?(info, @errorName(err).ptr);
@@ -478,17 +484,18 @@ fn scanJSON(info: c.duckdb_function_info, output: c.duckdb_data_chunk) void {
 
 // Creates a flat struct type that prepends a network field to db record fields.
 fn LookupResult(comptime T: type) type {
-    const record_fields = std.meta.fields(T);
+    const record_info = @typeInfo(T).@"struct";
+    const n = record_info.field_names.len;
 
-    var names: [record_fields.len + 1][]const u8 = undefined;
-    var types: [record_fields.len + 1]type = undefined;
+    var names: [n + 1][]const u8 = undefined;
+    var types: [n + 1]type = undefined;
 
     names[0] = "network";
     types[0] = []const u8;
 
-    for (record_fields, 0..) |f, i| {
-        names[i + 1] = f.name;
-        types[i + 1] = f.type;
+    for (record_info.field_names, record_info.field_types, 0..) |name, FT, i| {
+        names[i + 1] = name;
+        types[i + 1] = FT;
     }
 
     return @Struct(.auto, null, &names, &types, &@splat(.{}));
@@ -499,14 +506,13 @@ pub export fn register_lookup_functions(conn: c.duckdb_connection) callconv(.c) 
     defer api.duckdb_destroy_logical_type.?(@constCast(&varchar_type));
 
     // Register one function per database type, e.g., geolite_city(path, ip, fields).
-    inline for (std.meta.fields(maxminddb.DatabaseType)) |field| {
-        const dt: maxminddb.DatabaseType = @enumFromInt(field.value);
+    inline for (comptime std.meta.tags(maxminddb.DatabaseType)) |dt| {
         const T = dt.recordType();
 
         const f = api.duckdb_create_scalar_function.?();
         defer api.duckdb_destroy_scalar_function.?(@constCast(&f));
 
-        api.duckdb_scalar_function_set_name.?(f, field.name);
+        api.duckdb_scalar_function_set_name.?(f, @tagName(dt));
         api.duckdb_scalar_function_add_parameter.?(f, varchar_type); // path
         api.duckdb_scalar_function_add_parameter.?(f, varchar_type); // ip
         api.duckdb_scalar_function_add_parameter.?(f, varchar_type); // fields
@@ -575,7 +581,7 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
 
             // Fields are read from row 0 (constant across the batch).
             const fields_str = duckifier.readString(&fields_data[0]);
-            const field_names = maxminddb.Fields(std.meta.fields(T).len).parse(fields_str, ',') catch |err| {
+            const field_names = maxminddb.Fields(@typeInfo(T).@"struct".field_names.len).parse(fields_str, ',') catch |err| {
                 api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
                 return;
             };
@@ -619,7 +625,7 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
 
                 _ = arena.reset(.retain_capacity);
 
-                const result = db.lookup(
+                const result = db.query(
                     T,
                     arena_allocator,
                     ip,
@@ -632,15 +638,15 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
                     continue;
                 };
 
-                const net_str = std.fmt.bufPrint(&buf, "{f}", .{result.network}) catch |err| {
+                const net_str = std.mem.print(&buf, "{f}", .{result.network}) catch |err| {
                     api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
                     return;
                 };
 
                 var r: R = undefined;
                 r.network = net_str;
-                inline for (std.meta.fields(T)) |f| {
-                    @field(r, f.name) = @field(result.value, f.name);
+                inline for (@typeInfo(T).@"struct".field_names) |name| {
+                    @field(r, name) = @field(result.value, name);
                 }
                 duckifier.writeValue(R, r, output, i);
             }
@@ -722,7 +728,7 @@ fn lookupAnyCallback(
 
         _ = arena.reset(.retain_capacity);
 
-        const result = db.lookup(
+        const result = db.query(
             maxminddb.any.Value,
             arena_allocator,
             ip,
