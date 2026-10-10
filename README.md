@@ -109,6 +109,8 @@ with a `network` field containing the matched IP network in CIDR notation:
 - `geoip_domain(path, ip, fields)`
 - `geoip_static_ip_score(path, ip, fields)`
 - `geoip_user_count(path, ip, fields)`
+- `geoip_regions(path, ip, fields)`
+- `geoip_residential_proxy(path, ip, fields)`
 
 ## Development
 

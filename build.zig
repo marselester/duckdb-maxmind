@@ -47,27 +47,17 @@ pub fn build(b: *std.Build) void {
     lib.root_module.addCMacro("DUCKDB_BUILD_LOADABLE_EXTENSION", "1");
     lib.root_module.addCMacro("EXTENSION_VERSION", b.fmt("\"{s}\"", .{extension_version}));
 
-    const lib_install = b.addInstallArtifact(lib, .{});
-
-    // Detect the library file extension based on target OS.
-    // Windows DLLs go to bin, other platforms go to lib.
-    const lib_filename = duckdbLibFilename(b, target, extension_name);
-    const lib_path = if (target.result.os.tag == .windows)
-        b.getInstallPath(.bin, lib_filename)
-    else
-        b.getInstallPath(.lib, lib_filename);
-
     // Append DuckDB extension metadata (name, version, platform, API version).
     const platform = duckdbPlatform(target);
     const add_metadata = b.addSystemCommand(&[_][]const u8{
         "python3",
         "extension-template-c/extension-ci-tools/scripts/append_extension_metadata.py",
         "-l",
-        lib_path,
-        "-n",
-        extension_name,
-        "-o",
-        b.getInstallPath(.lib, extension_filename),
+    });
+    add_metadata.addArtifactArg(lib);
+    add_metadata.addArgs(&.{ "-n", extension_name, "-o" });
+    const extension_file = add_metadata.addOutputFileArg(extension_filename);
+    add_metadata.addArgs(&.{
         "-dv",
         extension_api_version,
         "-ev",
@@ -75,8 +65,7 @@ pub fn build(b: *std.Build) void {
         "-p",
         platform,
     });
-    add_metadata.step.dependOn(&lib_install.step);
-    b.getInstallStep().dependOn(&add_metadata.step);
+    b.getInstallStep().dependOn(&b.addInstallLibFile(extension_file, extension_filename).step);
 
     const benchmarks = [_]struct {
         file: []const u8,
@@ -93,6 +82,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path(bench.file),
             .link_libc = true,
         });
+        bench_module.addImport("duckdb", duckdb_module);
         bench_module.linkSystemLibrary("duckdb", .{});
 
         const exe = b.addExecutable(.{
@@ -102,9 +92,7 @@ pub fn build(b: *std.Build) void {
 
         const run_bench = b.addRunArtifact(exe);
         run_bench.step.dependOn(b.getInstallStep());
-        if (b.args) |args| {
-            run_bench.addArgs(args);
-        }
+        run_bench.addPassthruArgs();
 
         const bench_step = b.step(bench.name, bench.file);
         bench_step.dependOn(&run_bench.step);
@@ -139,13 +127,5 @@ fn duckdbPlatform(target: std.Build.ResolvedTarget) []const u8 {
             else => "unknown",
         },
         else => "unknown",
-    };
-}
-
-fn duckdbLibFilename(b: *std.Build, target: std.Build.ResolvedTarget, name: []const u8) []const u8 {
-    return switch (target.result.os.tag) {
-        .windows => b.fmt("{s}.dll", .{name}),
-        .macos => b.fmt("lib{s}.dylib", .{name}),
-        else => b.fmt("lib{s}.so", .{name}),
     };
 }
