@@ -35,6 +35,21 @@ SELECT network FROM read_mmdb('./test-data/test-data/GeoIP2-City-Test.mmdb', net
 ----
 89.160.20.112/28
 
+query II
+SELECT country.iso_code, city.names.en FROM read_mmdb('./test-data/test-data/GeoIP2-City-Test.mmdb', network='89.160.20.128/25');
+----
+SE	Linköping
+
+query II
+SELECT count(*), count(isp) FROM read_mmdb('./test-data/test-data/GeoIP2-ISP-Test.mmdb');
+----
+2129	2129
+
+query II
+SELECT sum(location.accuracy_radius), count(location.accuracy_radius) FROM read_mmdb('./test-data/test-data/GeoIP2-City-Test.mmdb');
+----
+26492	250
+
 # read_mmdb: include_empty parameter.
 
 query I
@@ -115,6 +130,16 @@ statement error
 SELECT * FROM read_mmdb(NULL) LIMIT 1;
 ----
 path must not be NULL
+
+statement error
+SELECT count(*) FROM read_mmdb('./test-data/test-data/MaxMind-DB-test-broken-search-tree-24.mmdb');
+----
+InvalidTreeNode
+
+statement error
+SELECT location FROM read_mmdb('./test-data/test-data/GeoIP2-City-Test-Broken-Double-Format.mmdb');
+----
+InvalidDoubleSize
 
 # Typed scalar functions (one per database type).
 
@@ -253,6 +278,11 @@ SELECT geolite_city('./nonexistent.mmdb', '1.0.0.0', '');
 ----
 FileNotFound
 
+statement error
+SELECT geoip_city('./test-data/test-data/GeoIP2-City-Test-Broken-Double-Format.mmdb', '2001:220::', '');
+----
+InvalidDoubleSize
+
 query I
 SELECT geolite_city('./test-data/test-data/GeoIP2-City-Test.mmdb', 'invalid', '');
 ----
@@ -320,6 +350,16 @@ SELECT mmdb_record('./test-data/test-data/GeoIP2-City-Test.mmdb', '89.160.20.128
 ----
 {}
 
+query I
+SELECT mmdb_record('./test-data/test-data/MaxMind-DB-test-decoder.mmdb', '1.1.1.0', '');
+----
+{"array":[1,2,3],"boolean":true,"bytes":"AAAAKg==","double":42.123456,"float":1.1,"int32":-268435456,"map":{"mapX":{"arrayX":[7,8,9],"utf8_stringX":"hello"}},"uint128":"1329227995784915872903807060280344576","uint16":100,"uint32":268435456,"uint64":1152921504606846976,"utf8_string":"unicode! ☯ - ♫"}
+
+query I
+SELECT length(mmdb_record('./test-data/test-data/MaxMind-DB-test-decoder-value-limit.mmdb', '1.0.0.0', ''));
+----
+131071
+
 # mmdb_record: path change within a batch.
 
 query II
@@ -330,25 +370,15 @@ SELECT path, mmdb_record(path, '2.2.3.0', 'city') AS rec FROM (VALUES ('./test-d
 
 # mmdb_record: edge cases.
 
-query I
-SELECT mmdb_record('./test-data/test-data/GeoLite2-City-Test.mmdb', '0.0.0.0', '');
-----
-NULL
-
-query I
-SELECT mmdb_record('./test-data/test-data/GeoIP2-Anonymous-IP-Test.mmdb', '1.0.0.0', '');
-----
-NULL
-
-query I
-SELECT length(mmdb_record('./test-data/test-data/MaxMind-DB-test-decoder-value-limit.mmdb', '1.0.0.0', ''));
-----
-131071
-
 statement error
 SELECT mmdb_record('./nonexistent.mmdb', '1.0.0.0', '');
 ----
 FileNotFound
+
+statement error
+SELECT mmdb_record('./test-data/test-data/MaxMind-DB-test-broken-pointers-24.mmdb', '1.1.1.32', '');
+----
+CorruptedTree
 
 query I
 SELECT mmdb_record('./test-data/test-data/GeoIP2-City-Test.mmdb', 'invalid', '');
@@ -367,6 +397,16 @@ NULL
 
 query I
 SELECT mmdb_record('./test-data/test-data/GeoIP2-City-Test.mmdb', '89.160.20.128', NULL);
+----
+NULL
+
+query I
+SELECT mmdb_record('./test-data/test-data/GeoLite2-City-Test.mmdb', '0.0.0.0', '');
+----
+NULL
+
+query I
+SELECT mmdb_record('./test-data/test-data/GeoIP2-Anonymous-IP-Test.mmdb', '1.0.0.0', '');
 ----
 NULL
 
