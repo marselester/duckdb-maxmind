@@ -2,6 +2,8 @@ name: CI
 
 on: [push]
 
+permissions: {}
+
 defaults:
   run:
     shell: bash
@@ -20,24 +22,17 @@ jobs:
 
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v6
-      # The zig aarch64-windows binary and LLVM libs are broken,
-      # see https://codeberg.org/ziglang/zig/issues/31865.
-      # As a workaround x86_64 Zig is used via Windows ARM emulation.
-      - uses: mlugg/setup-zig@v2
-        if: matrix.os != 'windows-11-arm'
-      - name: Setup Zig
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+      - name: Set DuckDB platform
         if: matrix.os == 'windows-11-arm'
-        run: |
-          curl -fsSLo zig.zip https://ziglang.org/download/0.17.0/zig-x86_64-windows-0.17.0.zip
-          unzip -q zig.zip -d zig-sdk
-          echo "$PWD/zig-sdk/zig-x86_64-windows-0.17.0" >> $GITHUB_PATH
-          echo "DUCKDB_PLATFORM=windows_arm64" >> $GITHUB_ENV
+        run: echo "DUCKDB_PLATFORM=windows_arm64" >> $GITHUB_ENV
       - name: Install Make
         if: runner.os == 'Windows'
         run: choco install make
-      - name: Fetch submodules
-        run: git submodule update --init --recursive
       - name: Build and test extension
         run: make configure release test_release
 
@@ -64,13 +59,14 @@ jobs:
           - target: x86_64-windows
             artifact: duckdb_maxmind_windows_amd64
     steps:
-      - uses: actions/checkout@v6
-      - uses: mlugg/setup-zig@v2
-      - name: Fetch submodules
-        run: git submodule update --init --recursive
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
       - name: Build
         run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.target }}
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: zig-out/lib/maxmind.duckdb_extension
@@ -94,7 +90,7 @@ jobs:
             artifact: duckdb_maxmind_windows_amd64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ matrix.artifact }}
       - name: Verify extension loads
@@ -119,7 +115,7 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
       - name: Prepare repository structure
         # DuckDB fetches an extension from a URL path based on its own version,
         # so we need to publish a platform binary under each version.
@@ -135,9 +131,9 @@ jobs:
           done
         env:
           GH_TOKEN: ${{ github.token }}
-      - uses: actions/upload-pages-artifact@v4
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: repo
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

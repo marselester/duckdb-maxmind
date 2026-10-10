@@ -38,9 +38,7 @@ ifeq ($(DUCKDB_PLATFORM),windows_arm64)
 endif
 
 ifeq ($(OS),Windows_NT)
-    # The zig aarch64-windows binary is broken,
-    # see https://codeberg.org/ziglang/zig/issues/31865.
-    # x86_64 zig works on ARM via Windows emulation.
+    # x86_64 zig also runs on Windows ARM via emulation.
     ZIG_ARCH=x86_64
     ZIG_OS=windows
 else
