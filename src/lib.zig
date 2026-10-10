@@ -16,8 +16,6 @@ const io: std.Io = io_instance.io();
 
 // Real MMDB databases have at most ~15 top-level fields.
 const max_mmdb_fields = 32;
-// 4KB should be enough to decode most of database records.
-const json_buf_size = 4096;
 
 // Creates, configures, and registers the read_mmdb() table function with DuckDB.
 // This function is exported with C calling convention so it can be called from
@@ -62,7 +60,8 @@ const BindData = struct {
     // The file path passed as the first argument to read_mmdb('/my/path').
     // It's heap-allocated with a null terminator so it can be passed to C APIs.
     path: [:0]u8,
-    network: maxminddb.Network,
+    // Null scans the whole database.
+    network: ?maxminddb.Network,
     include_empty: bool,
     db_type: ?maxminddb.DatabaseType,
 };
@@ -92,7 +91,6 @@ fn bindCallback(info: c.duckdb_bind_info) callconv(.c) void {
     const path: []const u8 = std.mem.span(path_cstr);
 
     // Parse optional network argument.
-    // It defaults to 0.0.0.0 for IPv4 and :: for IPv6 databases.
     var network: ?maxminddb.Network = null;
     var network_param = api.duckdb_bind_get_named_parameter.?(info, "network");
     if (network_param != null) {
@@ -126,13 +124,6 @@ fn bindCallback(info: c.duckdb_bind_info) callconv(.c) void {
     };
     defer db.close();
 
-    if (network == null) {
-        network = if (db.metadata.ip_version == 6)
-            maxminddb.Network.all_ipv6
-        else
-            maxminddb.Network.all_ipv4;
-    }
-
     const db_type = maxminddb.DatabaseType.new(db.metadata.database_type);
 
     // Column 0: IP network.
@@ -140,9 +131,9 @@ fn bindCallback(info: c.duckdb_bind_info) callconv(.c) void {
     defer api.duckdb_destroy_logical_type.?(@constCast(&varchar_type));
     api.duckdb_bind_add_result_column.?(info, "network", varchar_type);
 
-    if (db_type != null) {
+    if (db_type) |known_type| {
         // Columns 1..N: flattened record fields (enables projection pushdown).
-        switch (db_type.?) {
+        switch (known_type) {
             inline else => |dt| {
                 const T = dt.recordType();
                 const record_info = @typeInfo(T).@"struct";
@@ -173,7 +164,7 @@ fn bindCallback(info: c.duckdb_bind_info) callconv(.c) void {
         return;
     };
 
-    bind_data.network = network.?;
+    bind_data.network = network;
 
     bind_data.db_type = db_type;
     bind_data.include_empty = include_empty;
@@ -220,8 +211,8 @@ fn initCallback(info: c.duckdb_init_info) callconv(.c) void {
     const bind_ptr = api.duckdb_init_get_bind_data.?(info);
     const bind_data: *BindData = @ptrCast(@alignCast(bind_ptr));
 
-    if (bind_data.db_type != null) {
-        switch (bind_data.db_type.?) {
+    if (bind_data.db_type) |db_type| {
+        switch (db_type) {
             inline else => |dt| {
                 const T = dt.recordType();
                 initTyped(T, info, bind_data);
@@ -310,8 +301,8 @@ fn scanCallback(info: c.duckdb_function_info, output: c.duckdb_data_chunk) callc
     const bind_ptr = api.duckdb_function_get_bind_data.?(info);
     const bind_data: *BindData = @ptrCast(@alignCast(bind_ptr));
 
-    if (bind_data.db_type != null) {
-        switch (bind_data.db_type.?) {
+    if (bind_data.db_type) |db_type| {
+        switch (db_type) {
             inline else => |dt| {
                 const T = dt.recordType();
                 scanTyped(T, info, output);
@@ -419,12 +410,9 @@ fn scanJSON(info: c.duckdb_function_info, output: c.duckdb_data_chunk) void {
     }
 
     var net_buf: [64]u8 = undefined;
-    var json_buf: [json_buf_size]u8 = undefined;
-    var w = std.Io.Writer.fixed(&json_buf);
-
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-    const arena_allocator = arena.allocator();
+    // Grows to the largest record in the batch and is reused for every row.
+    var json: std.Io.Writer.Allocating = .init(allocator);
+    defer json.deinit();
 
     var i: u64 = 0;
     const chunk_size: u64 = api.duckdb_vector_size.?();
@@ -457,25 +445,13 @@ fn scanJSON(info: c.duckdb_function_info, output: c.duckdb_data_chunk) void {
                 return;
             };
 
-            w.end = 0;
-            if (value.format(&w)) {
-                api.duckdb_vector_assign_string_element_len.?(vec, i, w.buffer.ptr, w.end);
-            } else |_| {
-                var aw = std.Io.Writer.Allocating.init(arena_allocator);
-                value.format(&aw.writer) catch |err| {
-                    api.duckdb_function_set_error.?(info, @errorName(err).ptr);
-                    return;
-                };
-
-                api.duckdb_vector_assign_string_element_len.?(
-                    vec,
-                    i,
-                    aw.writer.buffer.ptr,
-                    aw.writer.end,
-                );
-            }
-
-            _ = arena.reset(.retain_capacity);
+            json.clearRetainingCapacity();
+            value.format(&json.writer) catch |err| {
+                api.duckdb_function_set_error.?(info, @errorName(err).ptr);
+                return;
+            };
+            const s = json.written();
+            api.duckdb_vector_assign_string_element_len.?(vec, i, s.ptr, s.len);
         }
     }
 
@@ -696,8 +672,9 @@ fn lookupAnyCallback(
     };
     defer db.close();
 
-    var buf: [json_buf_size]u8 = undefined;
-    var w = std.Io.Writer.fixed(&buf);
+    // Grows to the largest record in the batch and is reused for every row.
+    var json: std.Io.Writer.Allocating = .init(allocator);
+    defer json.deinit();
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -741,24 +718,12 @@ fn lookupAnyCallback(
             continue;
         };
 
-        // Format the record as JSON into a buffer, falling back to heap allocation
-        // via the arena for records that exceed the buffer size.
-        w.end = 0;
-        if (result.value.format(&w)) {
-            api.duckdb_vector_assign_string_element_len.?(output, i, w.buffer.ptr, w.end);
-        } else |_| {
-            var aw = std.Io.Writer.Allocating.init(arena_allocator);
-            result.value.format(&aw.writer) catch |err| {
-                api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
-                return;
-            };
-
-            api.duckdb_vector_assign_string_element_len.?(
-                output,
-                i,
-                aw.writer.buffer.ptr,
-                aw.writer.end,
-            );
-        }
+        json.clearRetainingCapacity();
+        result.value.format(&json.writer) catch |err| {
+            api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
+            return;
+        };
+        const s = json.written();
+        api.duckdb_vector_assign_string_element_len.?(output, i, s.ptr, s.len);
     }
 }

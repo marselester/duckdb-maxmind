@@ -94,6 +94,11 @@ SELECT count(*) FROM read_mmdb('./test-data/test-data/MaxMind-DB-test-mixed-24.m
 ----
 11
 
+query I
+SELECT length(record) FROM read_mmdb('./test-data/test-data/MaxMind-DB-test-decoder-value-limit.mmdb') LIMIT 1;
+----
+131071
+
 # read_mmdb: edge cases.
 
 statement error
@@ -334,6 +339,11 @@ query I
 SELECT mmdb_record('./test-data/test-data/GeoIP2-Anonymous-IP-Test.mmdb', '1.0.0.0', '');
 ----
 NULL
+
+query I
+SELECT length(mmdb_record('./test-data/test-data/MaxMind-DB-test-decoder-value-limit.mmdb', '1.0.0.0', ''));
+----
+131071
 
 statement error
 SELECT mmdb_record('./nonexistent.mmdb', '1.0.0.0', '');
