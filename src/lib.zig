@@ -555,9 +555,11 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
                 api.duckdb_vector_get_data.?(fields_vec),
             ));
 
-            // Fields are read from row 0 (constant across the batch).
-            const fields_str = duckifier.readString(&fields_data[0]);
-            const field_names = maxminddb.Fields(@typeInfo(T).@"struct".field_names.len).parse(fields_str, ',') catch |err| {
+            const Fields = maxminddb.Fields(@typeInfo(T).@"struct".field_names.len);
+
+            // We should parse the fields again only when they change.
+            var current_fields: []const u8 = duckifier.readString(&fields_data[0]);
+            var field_names = Fields.parse(current_fields, ',') catch |err| {
                 api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
                 return;
             };
@@ -578,6 +580,17 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
             var i: u64 = 0;
             var buf: [64]u8 = undefined;
             while (i < input_size) : (i += 1) {
+                const row_fields = duckifier.readString(&fields_data[i]);
+
+                if (!std.mem.eql(u8, row_fields, current_fields)) {
+                    field_names = Fields.parse(row_fields, ',') catch |err| {
+                        api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
+                        return;
+                    };
+
+                    current_fields = row_fields;
+                }
+
                 const row_path = duckifier.readString(&path_data[i]);
 
                 if (!std.mem.eql(u8, row_path, current_path)) {
@@ -656,9 +669,9 @@ fn lookupAnyCallback(
         api.duckdb_vector_get_data.?(fields_vec),
     ));
 
-    // Fields are read from row 0 (constant across the batch).
-    const fields_str = duckifier.readString(&fields_data[0]);
-    const field_names = maxminddb.Fields(max_mmdb_fields).parse(fields_str, ',') catch |err| {
+    // We should parse the fields again only when they change.
+    var current_fields: []const u8 = duckifier.readString(&fields_data[0]);
+    var field_names = maxminddb.Fields(max_mmdb_fields).parse(current_fields, ',') catch |err| {
         api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
         return;
     };
@@ -682,6 +695,17 @@ fn lookupAnyCallback(
 
     var i: u64 = 0;
     while (i < input_size) : (i += 1) {
+        const row_fields = duckifier.readString(&fields_data[i]);
+
+        if (!std.mem.eql(u8, row_fields, current_fields)) {
+            field_names = maxminddb.Fields(max_mmdb_fields).parse(row_fields, ',') catch |err| {
+                api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
+                return;
+            };
+
+            current_fields = row_fields;
+        }
+
         const row_path = duckifier.readString(&path_data[i]);
 
         if (!std.mem.eql(u8, row_path, current_path)) {
