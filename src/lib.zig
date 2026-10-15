@@ -115,7 +115,9 @@ fn bindCallback(info: c.duckdb_bind_info) callconv(.c) void {
     if (include_empty_param != null) {
         defer api.duckdb_destroy_value.?(&include_empty_param);
 
-        include_empty = api.duckdb_get_bool.?(include_empty_param);
+        if (!api.duckdb_is_null_value.?(include_empty_param)) {
+            include_empty = api.duckdb_get_bool.?(include_empty_param);
+        }
     }
 
     var db = maxminddb.Reader.mmap(allocator, io, path, .{}) catch |err| {

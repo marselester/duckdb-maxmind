@@ -68,6 +68,11 @@ SELECT count(*) FROM read_mmdb('./test-data/test-data/GeoIP2-Anonymous-IP-Test.m
 12
 
 query I
+SELECT count(*) FROM read_mmdb('./test-data/test-data/GeoIP2-Anonymous-IP-Test.mmdb', include_empty=NULL);
+----
+12
+
+query I
 SELECT count(*) FROM read_mmdb('./test-data/test-data/GeoIP2-Anonymous-IP-Test.mmdb', network='1.0.0.0/8', include_empty=true);
 ----
 31
