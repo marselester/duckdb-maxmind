@@ -55,6 +55,12 @@ pub export fn register_read_function(conn: c.duckdb_connection) callconv(.c) c.d
     return api.duckdb_register_table_function.?(conn, tf);
 }
 
+// Returns the record type that bind, init, scan, and the typed scalar functions decode into.
+// Bind, init, and scan must use the same type: the scan casts the init data back to InitData(T).
+fn RecordType(comptime dt: maxminddb.DatabaseType) type {
+    return duckifier.Nullable(dt.recordType());
+}
+
 // BindData is stored during the bind phase and retrieved during the init phase.
 const BindData = struct {
     // The file path passed as the first argument to read_mmdb('/my/path').
@@ -137,7 +143,7 @@ fn bindCallback(info: c.duckdb_bind_info) callconv(.c) void {
         // Columns 1..N: flattened record fields (enables projection pushdown).
         switch (known_type) {
             inline else => |dt| {
-                const T = dt.recordType();
+                const T = RecordType(dt);
                 const record_info = @typeInfo(T).@"struct";
                 inline for (record_info.field_names, record_info.field_types) |name, FT| {
                     const col_type = duckifier.createDuckDBType(FT);
@@ -216,7 +222,7 @@ fn initCallback(info: c.duckdb_init_info) callconv(.c) void {
     if (bind_data.db_type) |db_type| {
         switch (db_type) {
             inline else => |dt| {
-                const T = dt.recordType();
+                const T = RecordType(dt);
                 initTyped(T, info, bind_data);
             },
         }
@@ -306,7 +312,7 @@ fn scanCallback(info: c.duckdb_function_info, output: c.duckdb_data_chunk) callc
     if (bind_data.db_type) |db_type| {
         switch (db_type) {
             inline else => |dt| {
-                const T = dt.recordType();
+                const T = RecordType(dt);
                 scanTyped(T, info, output);
             },
         }
@@ -485,7 +491,7 @@ pub export fn register_lookup_functions(conn: c.duckdb_connection) callconv(.c) 
 
     // Register one function per database type, e.g., geolite_city(path, ip, fields).
     inline for (comptime std.meta.tags(maxminddb.DatabaseType)) |dt| {
-        const T = dt.recordType();
+        const T = RecordType(dt);
 
         const f = api.duckdb_create_scalar_function.?();
         defer api.duckdb_destroy_scalar_function.?(@constCast(&f));
@@ -532,6 +538,31 @@ pub export fn register_lookup_functions(conn: c.duckdb_connection) callconv(.c) 
 fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
     return struct {
         const R = LookupResult(T);
+        const record_info = @typeInfo(T).@"struct";
+        const Fields = maxminddb.Fields(record_info.field_names.len);
+
+        // Parses the fields parameter (empty requests all fields).
+        // Sets the function error and returns null if a name is not a record field.
+        fn parseFields(info: c.duckdb_function_info, str: []const u8) ?Fields {
+            const field_names = Fields.parse(str, ',') catch |err| {
+                api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
+                return null;
+            };
+
+            if (field_names.unknown(T)) |name| {
+                var msg: [128]u8 = undefined;
+                const text = std.mem.printSentinel(
+                    &msg,
+                    "unknown field: {s}",
+                    .{name},
+                    0,
+                ) catch "unknown field";
+                api.duckdb_scalar_function_set_error.?(info, text.ptr);
+                return null;
+            }
+
+            return field_names;
+        }
 
         fn callback(
             info: c.duckdb_function_info,
@@ -556,8 +587,6 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
             const fields_data: [*]c.duckdb_string_t = @ptrCast(@alignCast(
                 api.duckdb_vector_get_data.?(fields_vec),
             ));
-
-            const Fields = maxminddb.Fields(@typeInfo(T).@"struct".field_names.len);
 
             // We should parse the fields again only when they change.
             // An empty string and empty Fields both request all fields.
@@ -590,10 +619,7 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
                 const row_fields = duckifier.readString(&fields_data[i]);
 
                 if (!std.mem.eql(u8, row_fields, current_fields)) {
-                    field_names = Fields.parse(row_fields, ',') catch |err| {
-                        api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
-                        return;
-                    };
+                    field_names = parseFields(info, row_fields) orelse return;
 
                     current_fields = row_fields;
                 }
@@ -641,12 +667,19 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
                     return;
                 };
 
-                var r: R = undefined;
-                r.network = net_str;
-                inline for (@typeInfo(T).@"struct".field_names) |name| {
-                    @field(r, name) = @field(result.value, name);
+                // Child 0 of the result struct is the network, then the record fields follow.
+                const net_vec = api.duckdb_struct_vector_get_child.?(output, 0);
+                duckifier.writeValue([]const u8, net_str, net_vec, i);
+
+                inline for (record_info.field_names, record_info.field_types, 0..) |name, FT, idx| {
+                    const child_vec = api.duckdb_struct_vector_get_child.?(output, idx + 1);
+                    // Fields that the fields parameter does not request are NULL, not their default values.
+                    if (field_names.matches(name)) {
+                        duckifier.writeValue(FT, @field(result.value, name), child_vec, i);
+                    } else {
+                        duckifier.writeNull(FT, child_vec, i);
+                    }
                 }
-                duckifier.writeValue(R, r, output, i);
             }
         }
     }.callback;

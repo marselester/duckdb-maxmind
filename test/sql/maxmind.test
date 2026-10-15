@@ -43,12 +43,7 @@ SE	Linköping
 query II
 SELECT count(*), count(isp) FROM read_mmdb('./test-data/test-data/GeoIP2-ISP-Test.mmdb');
 ----
-2129	2129
-
-query II
-SELECT sum(location.accuracy_radius), count(location.accuracy_radius) FROM read_mmdb('./test-data/test-data/GeoIP2-City-Test.mmdb');
-----
-26492	250
+2129	1377
 
 # read_mmdb: include_empty parameter.
 
@@ -121,6 +116,11 @@ SELECT length(record) FROM read_mmdb('./test-data/test-data/MaxMind-DB-test-deco
 
 # read_mmdb: edge cases.
 
+query III
+SELECT city.geoname_id, postal.code, location.accuracy_radius FROM read_mmdb('./test-data/test-data/GeoIP2-City-Test.mmdb', network='2001:218::/32');
+----
+NULL	NULL	100
+
 statement error
 SELECT * FROM read_mmdb('./nonexistent.mmdb') LIMIT 1;
 ----
@@ -181,7 +181,7 @@ Linköping
 query I
 SELECT geolite_city('./test-data/test-data/GeoIP2-City-Test.mmdb', '89.160.20.128', 'city,country');
 ----
-{'network': 89.160.20.128/25, 'city': {'geoname_id': 2694762, 'names': {de=Linköping, en=Linköping, fr=Linköping, ja=リンシェーピング, zh-CN=林雪平}}, 'continent': {'code': '', 'geoname_id': 0, 'names': NULL}, 'country': {'geoname_id': 2661886, 'is_in_european_union': true, 'iso_code': SE, 'names': {de=Schweden, en=Sweden, es=Suecia, fr=Suède, ja=スウェーデン王国, pt-BR=Suécia, ru=Швеция, zh-CN=瑞典}}, 'location': {'accuracy_radius': 0, 'latitude': NULL, 'longitude': NULL, 'time_zone': ''}, 'postal': {'code': ''}, 'registered_country': {'geoname_id': 0, 'is_in_european_union': false, 'iso_code': '', 'names': NULL}, 'represented_country': {'geoname_id': 0, 'is_in_european_union': false, 'iso_code': '', 'names': NULL, 'type': ''}, 'subdivisions': NULL}
+{'network': 89.160.20.128/25, 'city': {'geoname_id': 2694762, 'names': {de=Linköping, en=Linköping, fr=Linköping, ja=リンシェーピング, zh-CN=林雪平}}, 'continent': NULL, 'country': {'geoname_id': 2661886, 'is_in_european_union': true, 'iso_code': SE, 'names': {de=Schweden, en=Sweden, es=Suecia, fr=Suède, ja=スウェーデン王国, pt-BR=Suécia, ru=Швеция, zh-CN=瑞典}}, 'location': NULL, 'postal': NULL, 'registered_country': NULL, 'represented_country': NULL, 'subdivisions': NULL}
 
 query I
 SELECT geolite_country('./test-data/test-data/GeoLite2-Country-Test.mmdb', '2.125.160.216', '').country.names.en;
@@ -278,10 +278,35 @@ SELECT path, geoip_city(path, '2.2.3.0', 'city').city.names.en AS city FROM (VAL
 
 # Typed scalar: edge cases.
 
+query III
+SELECT r.city.geoname_id, r.postal.code, r.country.is_in_european_union FROM (SELECT geoip_city('./test-data/test-data/GeoIP2-City-Test.mmdb', '2001:218::', '') AS r);
+----
+NULL	NULL	false
+
+query III
+SELECT r.is_anonymous, r.is_anonymous_vpn, r.is_tor_exit_node FROM (SELECT geoip_anonymous_ip('./test-data/test-data/GeoIP2-Anonymous-IP-Test.mmdb', '1.2.0.0', 'is_anonymous, is_anonymous_vpn') AS r);
+----
+true	true	NULL
+
+query III
+SELECT r.ip_risk IS NULL, r.anonymizer_confidence IS NULL, r.provider_name FROM (SELECT geoip_ip_risk('./test-data/test-data/GeoIP2-IP-Risk-Test.mmdb', '11.1.2.3', '') AS r);
+----
+true	true	ProxyCorp
+
+query II
+SELECT r.subdivisions[1].confidence IS NULL, r.subdivisions[1].iso_code FROM (SELECT geoip_enterprise('./test-data/test-data/GeoIP2-Enterprise-Test.mmdb', '214.78.120.0', 'subdivisions') AS r);
+----
+true	CA
+
 statement error
 SELECT geolite_city('./nonexistent.mmdb', '1.0.0.0', '');
 ----
 FileNotFound
+
+statement error
+SELECT geoip_city('./test-data/test-data/GeoIP2-City-Test.mmdb', '89.160.20.128', 'contry');
+----
+unknown field: contry
 
 statement error
 SELECT geoip_city('./test-data/test-data/GeoIP2-City-Test-Broken-Double-Format.mmdb', '2001:220::', '');
@@ -367,6 +392,11 @@ query I
 SELECT mmdb_record('./test-data/test-data/MaxMind-DB-test-decoder.mmdb', '1.1.1.0', '');
 ----
 {"array":[1,2,3],"boolean":true,"bytes":"AAAAKg==","double":42.123456,"float":1.1,"int32":-268435456,"map":{"mapX":{"arrayX":[7,8,9],"utf8_stringX":"hello"}},"uint128":"1329227995784915872903807060280344576","uint16":100,"uint32":268435456,"uint64":1152921504606846976,"utf8_string":"unicode! ☯ - ♫"}
+
+query I
+SELECT mmdb_record('./test-data/test-data/MaxMind-DB-test-decoder.mmdb', '255.255.255.255', 'double,float');
+----
+{"double":"Infinity","float":"Infinity"}
 
 query I
 SELECT length(mmdb_record('./test-data/test-data/MaxMind-DB-test-decoder-value-limit.mmdb', '1.0.0.0', ''));
