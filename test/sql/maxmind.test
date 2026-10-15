@@ -304,6 +304,14 @@ SELECT geolite_city('./test-data/test-data/GeoIP2-City-Test.mmdb', '89.160.20.12
 NULL
 
 query I
+SELECT geolite_city(CASE WHEN i = 0 THEN NULL ELSE './test-data/test-data/GeoIP2-City-Test.mmdb' END, CASE WHEN i = 1 THEN NULL ELSE '89.160.20.128' END, CASE WHEN i = 2 THEN NULL ELSE 'city' END).city.geoname_id FROM range(4) t(i);
+----
+NULL
+NULL
+NULL
+2694762
+
+query I
 SELECT geolite_city('./test-data/test-data/GeoIP2-City-Test.mmdb', '192.168.1.1', '');
 ----
 NULL
@@ -399,6 +407,14 @@ query I
 SELECT mmdb_record('./test-data/test-data/GeoIP2-City-Test.mmdb', '89.160.20.128', NULL);
 ----
 NULL
+
+query I
+SELECT mmdb_record(CASE WHEN i = 0 THEN NULL ELSE './test-data/test-data/GeoIP2-City-Test.mmdb' END, CASE WHEN i = 1 THEN NULL ELSE '89.160.20.128' END, CASE WHEN i = 2 THEN NULL ELSE 'postal' END) FROM range(4) t(i);
+----
+NULL
+NULL
+NULL
+{}
 
 query I
 SELECT mmdb_record('./test-data/test-data/GeoLite2-City-Test.mmdb', '0.0.0.0', '');

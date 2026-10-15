@@ -12,6 +12,21 @@ pub fn readString(s: *c.duckdb_string_t) []const u8 {
     return api.duckdb_string_t_data.?(s)[0..len];
 }
 
+/// Reports whether any column of a DuckDB data chunk is NULL in the row.
+/// The data of a NULL row is undefined, so check this before reading the row.
+pub fn hasNull(chunk: c.duckdb_data_chunk, row: u64) bool {
+    for (0..api.duckdb_data_chunk_get_column_count.?(chunk)) |col| {
+        const vector = api.duckdb_data_chunk_get_vector.?(chunk, col);
+        const validity = api.duckdb_vector_get_validity.?(vector);
+        // A vector without a validity mask has no NULL rows.
+        if (validity != null and !api.duckdb_validity_row_is_valid.?(validity, row)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 /// Creates a DuckDB logical type that mirrors a Zig type.
 pub fn createDuckDBType(comptime T: type) c.duckdb_logical_type {
     switch (T) {

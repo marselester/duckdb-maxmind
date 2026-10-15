@@ -558,20 +558,19 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
             const Fields = maxminddb.Fields(@typeInfo(T).@"struct".field_names.len);
 
             // We should parse the fields again only when they change.
-            var current_fields: []const u8 = duckifier.readString(&fields_data[0]);
-            var field_names = Fields.parse(current_fields, ',') catch |err| {
-                api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
-                return;
-            };
+            // An empty string and empty Fields both request all fields.
+            var current_fields: []const u8 = "";
+            var field_names: Fields = .{};
 
             // We should re-open the Reader only when the path changes.
-            var current_path: []const u8 = duckifier.readString(&path_data[0]);
-
-            var db = maxminddb.Reader.mmap(allocator, io, current_path, .{}) catch |err| {
-                api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
-                return;
-            };
-            defer db.close();
+            // The first row without NULL arguments opens it.
+            var current_path: []const u8 = "";
+            var db: ?maxminddb.Reader = null;
+            defer {
+                if (db) |*d| {
+                    d.close();
+                }
+            }
 
             var arena = std.heap.ArenaAllocator.init(allocator);
             defer arena.deinit();
@@ -580,6 +579,12 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
             var i: u64 = 0;
             var buf: [64]u8 = undefined;
             while (i < input_size) : (i += 1) {
+                // A NULL argument makes the row NULL.
+                if (duckifier.hasNull(input, i)) {
+                    duckifier.writeNull(R, output, i);
+                    continue;
+                }
+
                 const row_fields = duckifier.readString(&fields_data[i]);
 
                 if (!std.mem.eql(u8, row_fields, current_fields)) {
@@ -593,13 +598,15 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
 
                 const row_path = duckifier.readString(&path_data[i]);
 
-                if (!std.mem.eql(u8, row_path, current_path)) {
+                if (db == null or !std.mem.eql(u8, row_path, current_path)) {
                     const new_db = maxminddb.Reader.mmap(allocator, io, row_path, .{}) catch |err| {
                         api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
                         return;
                     };
 
-                    db.close();
+                    if (db) |*d| {
+                        d.close();
+                    }
                     db = new_db;
 
                     current_path = row_path;
@@ -614,7 +621,7 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
 
                 _ = arena.reset(.retain_capacity);
 
-                const result = db.query(
+                const result = db.?.query(
                     T,
                     arena_allocator,
                     ip,
@@ -670,20 +677,19 @@ fn lookupAnyCallback(
     ));
 
     // We should parse the fields again only when they change.
-    var current_fields: []const u8 = duckifier.readString(&fields_data[0]);
-    var field_names = maxminddb.Fields(max_mmdb_fields).parse(current_fields, ',') catch |err| {
-        api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
-        return;
-    };
+    // An empty string and empty Fields both request all fields.
+    var current_fields: []const u8 = "";
+    var field_names: maxminddb.Fields(max_mmdb_fields) = .{};
 
     // We should re-open the Reader only when the path changes.
-    var current_path: []const u8 = duckifier.readString(&path_data[0]);
-
-    var db = maxminddb.Reader.mmap(allocator, io, current_path, .{}) catch |err| {
-        api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
-        return;
-    };
-    defer db.close();
+    // The first row without NULL arguments opens it.
+    var current_path: []const u8 = "";
+    var db: ?maxminddb.Reader = null;
+    defer {
+        if (db) |*d| {
+            d.close();
+        }
+    }
 
     // Grows to the largest record in the batch and is reused for every row.
     var json: std.Io.Writer.Allocating = .init(allocator);
@@ -695,6 +701,12 @@ fn lookupAnyCallback(
 
     var i: u64 = 0;
     while (i < input_size) : (i += 1) {
+        // A NULL argument makes the row NULL.
+        if (duckifier.hasNull(input, i)) {
+            duckifier.writeNull([]const u8, output, i);
+            continue;
+        }
+
         const row_fields = duckifier.readString(&fields_data[i]);
 
         if (!std.mem.eql(u8, row_fields, current_fields)) {
@@ -708,13 +720,15 @@ fn lookupAnyCallback(
 
         const row_path = duckifier.readString(&path_data[i]);
 
-        if (!std.mem.eql(u8, row_path, current_path)) {
+        if (db == null or !std.mem.eql(u8, row_path, current_path)) {
             const new_db = maxminddb.Reader.mmap(allocator, io, row_path, .{}) catch |err| {
                 api.duckdb_scalar_function_set_error.?(info, @errorName(err).ptr);
                 return;
             };
 
-            db.close();
+            if (db) |*d| {
+                d.close();
+            }
             db = new_db;
 
             current_path = row_path;
@@ -729,7 +743,7 @@ fn lookupAnyCallback(
 
         _ = arena.reset(.retain_capacity);
 
-        const result = db.query(
+        const result = db.?.query(
             maxminddb.any.Value,
             arena_allocator,
             ip,
