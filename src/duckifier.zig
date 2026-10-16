@@ -1,5 +1,6 @@
 const std = @import("std");
 const c = @import("duckdb");
+const maxminddb = @import("maxminddb");
 extern const duckdb_ext_api: c.duckdb_ext_api_v1;
 const api = &duckdb_ext_api;
 
@@ -25,6 +26,49 @@ pub fn hasNull(chunk: c.duckdb_data_chunk, row: u64) bool {
     }
 
     return false;
+}
+
+/// Returns the record type T with its string and number fields made optional with a null default,
+/// so a field that is absent in the record becomes NULL instead of "" or 0.
+/// Booleans keep their false default because MaxMind databases leave out false flags.
+pub fn Nullable(comptime T: type) type {
+    const info = @typeInfo(T).@"struct";
+    var types: [info.field_names.len]type = undefined;
+    var attrs: [info.field_names.len]std.lang.Type.Struct.FieldAttributes = undefined;
+    for (info.field_types, info.field_attrs, 0..) |FT, attr, i| {
+        const NT = NullableField(FT);
+        types[i] = NT;
+        attrs[i] = attr;
+        if (NT != FT) {
+            const default: NT = if (@typeInfo(NT) == .optional) null else .{};
+            attrs[i].default_value_ptr = &default;
+        }
+    }
+
+    return @Struct(.auto, null, info.field_names, &types, &attrs);
+}
+
+// Makes a string or number field optional.
+// Applies Nullable to the structs inside other fields.
+fn NullableField(comptime FT: type) type {
+    return switch (@typeInfo(FT)) {
+        .int, .float, .pointer => ?FT,
+        else => NullableStructs(FT),
+    };
+}
+
+// Applies Nullable to the structs inside FT, e.g., the elements of ?Array(Subdivision).
+fn NullableStructs(comptime FT: type) type {
+    return switch (@typeInfo(FT)) {
+        .optional => |opt| ?NullableStructs(opt.child),
+        .@"struct" => if (@hasDecl(FT, "array_marker"))
+            maxminddb.Array(NullableStructs(std.meta.Elem(@FieldType(FT, "items"))))
+        else if (@hasDecl(FT, "map_marker"))
+            FT
+        else
+            Nullable(FT),
+        else => FT,
+    };
 }
 
 /// Creates a DuckDB logical type that mirrors a Zig type.
