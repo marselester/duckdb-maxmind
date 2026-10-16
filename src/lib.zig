@@ -22,18 +22,18 @@ const max_mmdb_fields = 32;
 // the C entrypoint in extension.c.
 pub export fn register_read_function(conn: c.duckdb_connection) callconv(.c) c.duckdb_state {
     // Create an empty table function handle.
-    const tf = api.duckdb_create_table_function.?();
-    defer api.duckdb_destroy_table_function.?(@constCast(&tf));
+    var tf = api.duckdb_create_table_function.?();
+    defer api.duckdb_destroy_table_function.?(&tf);
 
     // Users will call the function SELECT * FROM read_mmdb('/path/to/my.mmdb').
     api.duckdb_table_function_set_name.?(tf, "read_mmdb");
 
     // Declare VARCHAR parameters for the file path and optional network filter.
-    const varchar_type = api.duckdb_create_logical_type.?(c.DUCKDB_TYPE_VARCHAR);
-    defer api.duckdb_destroy_logical_type.?(@constCast(&varchar_type));
+    var varchar_type = api.duckdb_create_logical_type.?(c.DUCKDB_TYPE_VARCHAR);
+    defer api.duckdb_destroy_logical_type.?(&varchar_type);
 
-    const bool_type = api.duckdb_create_logical_type.?(c.DUCKDB_TYPE_BOOLEAN);
-    defer api.duckdb_destroy_logical_type.?(@constCast(&bool_type));
+    var bool_type = api.duckdb_create_logical_type.?(c.DUCKDB_TYPE_BOOLEAN);
+    defer api.duckdb_destroy_logical_type.?(&bool_type);
 
     // Positional: file path to the mmdb database.
     api.duckdb_table_function_add_parameter.?(tf, varchar_type);
@@ -135,8 +135,8 @@ fn bindCallback(info: c.duckdb_bind_info) callconv(.c) void {
     const db_type = maxminddb.DatabaseType.new(db.metadata.database_type);
 
     // Column 0: IP network.
-    const varchar_type = api.duckdb_create_logical_type.?(c.DUCKDB_TYPE_VARCHAR);
-    defer api.duckdb_destroy_logical_type.?(@constCast(&varchar_type));
+    var varchar_type = api.duckdb_create_logical_type.?(c.DUCKDB_TYPE_VARCHAR);
+    defer api.duckdb_destroy_logical_type.?(&varchar_type);
     api.duckdb_bind_add_result_column.?(info, "network", varchar_type);
 
     if (db_type) |known_type| {
@@ -146,15 +146,18 @@ fn bindCallback(info: c.duckdb_bind_info) callconv(.c) void {
                 const T = RecordType(dt);
                 const record_info = @typeInfo(T).@"struct";
                 inline for (record_info.field_names, record_info.field_types) |name, FT| {
-                    const col_type = duckifier.createDuckDBType(FT);
-                    defer api.duckdb_destroy_logical_type.?(@constCast(&col_type));
+                    var col_type = duckifier.createDuckDBType(FT);
+                    defer api.duckdb_destroy_logical_type.?(&col_type);
                     api.duckdb_bind_add_result_column.?(info, name, col_type);
                 }
             },
         }
     } else {
-        // Column 1: record as JSON VARCHAR for unknown database types.
-        api.duckdb_bind_add_result_column.?(info, "record", varchar_type);
+        // Column 1: record as JSON for unknown database types.
+        var json_type = api.duckdb_create_logical_type.?(c.DUCKDB_TYPE_VARCHAR);
+        defer api.duckdb_destroy_logical_type.?(&json_type);
+        api.duckdb_logical_type_set_alias.?(json_type, "JSON");
+        api.duckdb_bind_add_result_column.?(info, "record", json_type);
     }
 
     // Hint the query planner with an upper bound on the number of rows.
@@ -486,23 +489,23 @@ fn LookupResult(comptime T: type) type {
 }
 
 pub export fn register_lookup_functions(conn: c.duckdb_connection) callconv(.c) c.duckdb_state {
-    const varchar_type = api.duckdb_create_logical_type.?(c.DUCKDB_TYPE_VARCHAR);
-    defer api.duckdb_destroy_logical_type.?(@constCast(&varchar_type));
+    var varchar_type = api.duckdb_create_logical_type.?(c.DUCKDB_TYPE_VARCHAR);
+    defer api.duckdb_destroy_logical_type.?(&varchar_type);
 
     // Register one function per database type, e.g., geolite_city(path, ip, fields).
     inline for (comptime std.meta.tags(maxminddb.DatabaseType)) |dt| {
         const T = RecordType(dt);
 
-        const f = api.duckdb_create_scalar_function.?();
-        defer api.duckdb_destroy_scalar_function.?(@constCast(&f));
+        var f = api.duckdb_create_scalar_function.?();
+        defer api.duckdb_destroy_scalar_function.?(&f);
 
         api.duckdb_scalar_function_set_name.?(f, @tagName(dt));
         api.duckdb_scalar_function_add_parameter.?(f, varchar_type); // path
         api.duckdb_scalar_function_add_parameter.?(f, varchar_type); // ip
         api.duckdb_scalar_function_add_parameter.?(f, varchar_type); // fields
 
-        const return_type = duckifier.createDuckDBType(LookupResult(T));
-        defer api.duckdb_destroy_logical_type.?(@constCast(&return_type));
+        var return_type = duckifier.createDuckDBType(LookupResult(T));
+        defer api.duckdb_destroy_logical_type.?(&return_type);
         api.duckdb_scalar_function_set_return_type.?(f, return_type);
 
         api.duckdb_scalar_function_set_function.?(f, lookupCallback(T));
@@ -513,17 +516,20 @@ pub export fn register_lookup_functions(conn: c.duckdb_connection) callconv(.c) 
     }
 
     // Register mmdb_record(path, ip, fields) to lookup in any MMDB file.
-    // It returns VARCHAR containing JSON since any.Value is recursive
+    // It returns JSON since any.Value is recursive
     // and can't be mapped to a fixed DuckDB type.
-    const f = api.duckdb_create_scalar_function.?();
-    defer api.duckdb_destroy_scalar_function.?(@constCast(&f));
+    var f = api.duckdb_create_scalar_function.?();
+    defer api.duckdb_destroy_scalar_function.?(&f);
 
     api.duckdb_scalar_function_set_name.?(f, "mmdb_record");
     api.duckdb_scalar_function_add_parameter.?(f, varchar_type); // path
     api.duckdb_scalar_function_add_parameter.?(f, varchar_type); // ip
     api.duckdb_scalar_function_add_parameter.?(f, varchar_type); // fields
 
-    api.duckdb_scalar_function_set_return_type.?(f, varchar_type);
+    var json_type = api.duckdb_create_logical_type.?(c.DUCKDB_TYPE_VARCHAR);
+    defer api.duckdb_destroy_logical_type.?(&json_type);
+    api.duckdb_logical_type_set_alias.?(json_type, "JSON");
+    api.duckdb_scalar_function_set_return_type.?(f, json_type);
 
     api.duckdb_scalar_function_set_function.?(f, lookupAnyCallback);
 

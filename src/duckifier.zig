@@ -90,11 +90,11 @@ pub fn createDuckDBType(comptime T: type) c.duckdb_logical_type {
         .@"struct" => |info| {
             // MAP
             if (@hasDecl(T, "map_marker")) {
-                const key_type = api.duckdb_create_logical_type.?(c.DUCKDB_TYPE_VARCHAR);
-                defer api.duckdb_destroy_logical_type.?(@constCast(&key_type));
+                var key_type = api.duckdb_create_logical_type.?(c.DUCKDB_TYPE_VARCHAR);
+                defer api.duckdb_destroy_logical_type.?(&key_type);
 
-                const val_type = api.duckdb_create_logical_type.?(c.DUCKDB_TYPE_VARCHAR);
-                defer api.duckdb_destroy_logical_type.?(@constCast(&val_type));
+                var val_type = api.duckdb_create_logical_type.?(c.DUCKDB_TYPE_VARCHAR);
+                defer api.duckdb_destroy_logical_type.?(&val_type);
 
                 return api.duckdb_create_map_type.?(key_type, val_type);
             }
@@ -102,8 +102,8 @@ pub fn createDuckDBType(comptime T: type) c.duckdb_logical_type {
             // LIST
             if (@hasDecl(T, "array_marker")) {
                 const ChildType = std.meta.Elem(@FieldType(T, "items"));
-                const elem_type = createDuckDBType(ChildType);
-                defer api.duckdb_destroy_logical_type.?(@constCast(&elem_type));
+                var elem_type = createDuckDBType(ChildType);
+                defer api.duckdb_destroy_logical_type.?(&elem_type);
 
                 return api.duckdb_create_list_type.?(elem_type);
             }

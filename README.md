@@ -47,7 +47,7 @@ SELECT geolite_city(
 -- Look up a record from any MMDB file.
 SELECT mmdb_record(
   './GeoLite2-City.mmdb', '1.0.64.0', 'city'
-)::json -> 'city' -> 'names' ->> 'en' AS en;
+) -> 'city' -> 'names' ->> 'en' AS en;
 ┌───────────┐
 │    en     │
 ├───────────┤
@@ -81,13 +81,13 @@ LOAD './zig-out/lib/maxmind.duckdb_extension';
 Table function `read_mmdb(path)` scans all IP network blocks in the database.
 For known GeoLite/GeoIP databases, record fields are flattened into top-level columns
 such as city, country, location.
-For unknown database types, records are returned as JSON in a `record` VARCHAR column.
+For unknown database types, records are returned in a `record` JSON column.
 Use the optional `network` parameter to limit the scan,
 for example, `read_mmdb(path, network='1.0.0.0/8')`.
 Empty records are excluded by default, use `include_empty=true` to include them.
 
 Scalar function `mmdb_record(path, ip, fields)` works with any MMDB file
-and returns the record as JSON string.
+and returns the record as JSON.
 The `fields` parameter is a comma-separated list of record fields to decode.
 Pass an empty string to decode all fields.
 
