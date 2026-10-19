@@ -183,9 +183,17 @@ pub fn writeValue(comptime T: type, value: T, vector: c.duckdb_vector, row: u64)
 /// child vectors (struct fields, list/map entries) to avoid uninitialized data
 /// that would cause DuckDB to crash during result serialization.
 pub fn writeNull(comptime T: type, vector: c.duckdb_vector, row: u64) void {
-    // Tell DuckDB "this row is NULL".
-    api.duckdb_vector_ensure_validity_writable.?(vector);
-    const validity = api.duckdb_vector_get_validity.?(vector);
+    // An optional and its child share the vector, so mark the row once.
+    if (@typeInfo(T) == .optional) {
+        return writeNull(@typeInfo(T).optional.child, vector, row);
+    }
+
+    // Tell DuckDB "this row is NULL", creating the validity mask if the vector has none.
+    var validity = api.duckdb_vector_get_validity.?(vector);
+    if (validity == null) {
+        api.duckdb_vector_ensure_validity_writable.?(vector);
+        validity = api.duckdb_vector_get_validity.?(vector);
+    }
     api.duckdb_validity_set_row_invalid.?(validity, row);
 
     switch (T) {
@@ -194,7 +202,6 @@ pub fn writeNull(comptime T: type, vector: c.duckdb_vector, row: u64) void {
     }
 
     switch (@typeInfo(T)) {
-        .optional => |opt| writeNull(opt.child, vector, row),
         .@"struct" => |info| {
             // MAP or LIST: write an empty list entry so the offset/length aren't garbage.
             if (@hasDecl(T, "map_marker") or @hasDecl(T, "array_marker")) {

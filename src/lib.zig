@@ -596,8 +596,10 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
 
             // We should parse the fields again only when they change.
             // An empty string and empty Fields both request all fields.
+            // requested[i] is true if the fields parameter asks for record field i.
             var current_fields: []const u8 = "";
             var field_names: Fields = .{};
+            var requested: [record_info.field_names.len]bool = @splat(true);
 
             // We should re-open the Reader only when the path changes.
             // The first row without NULL arguments opens it.
@@ -626,6 +628,9 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
 
                 if (!std.mem.eql(u8, row_fields, current_fields)) {
                     field_names = parseFields(info, row_fields) orelse return;
+                    inline for (record_info.field_names, 0..) |name, idx| {
+                        requested[idx] = field_names.matches(name);
+                    }
 
                     current_fields = row_fields;
                 }
@@ -680,7 +685,7 @@ fn lookupCallback(comptime T: type) c.duckdb_scalar_function_t {
                 inline for (record_info.field_names, record_info.field_types, 0..) |name, FT, idx| {
                     const child_vec = api.duckdb_struct_vector_get_child.?(output, idx + 1);
                     // Fields that the fields parameter does not request are NULL, not their default values.
-                    if (field_names.matches(name)) {
+                    if (requested[idx]) {
                         duckifier.writeValue(FT, @field(result.value, name), child_vec, i);
                     } else {
                         duckifier.writeNull(FT, child_vec, i);
