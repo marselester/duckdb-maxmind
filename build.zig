@@ -14,6 +14,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .root_source_file = b.path("src/lib.zig"),
         .link_libc = true,
+        .strip = optimize != .debug,
     });
 
     const duckdb_module = b.addModule("duckdb", .{
